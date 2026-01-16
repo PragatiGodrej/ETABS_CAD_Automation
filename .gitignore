@@ -1,0 +1,17 @@
+# Visual Studio
+.vs/
+bin/
+obj/
+
+# NuGet
+packages/
+
+# User files
+*.user
+*.suo
+*.cache
+*.log
+
+# Build
+[Dd]ebug/
+[Rr]elease/
