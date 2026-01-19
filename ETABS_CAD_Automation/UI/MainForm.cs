@@ -127,7 +127,7 @@ namespace ETABS_CAD_Automation
                         }
 
                         // Import with multi-floor-type configuration
-                        CADImporter importer = new CADImporter(etabs.SapModel);
+                        CADImporterEnhanced importer = new CADImporterEnhanced(etabs.SapModel);
                         bool success = importer.ImportMultiFloorTypeCAD(
                             floorConfigs,
                             storyHeights,

@@ -55,6 +55,7 @@
     <Compile Include="Core\ETABSController.cs" />
     <Compile Include="Core\MaterialManager.cs" />
     <Compile Include="Core\StoryManager.cs" />
+    <Compile Include="Core\WallThicknessCalculator.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>
