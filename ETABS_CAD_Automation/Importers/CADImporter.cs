@@ -1,161 +1,7 @@
-﻿//// ============================================================================
-//// FILE: Importers/CADImporter.cs
-//// ============================================================================
-//using ETABSv1;
-//using ETABS_CAD_Automation.Core;
-//using ETABS_CAD_Automation.Models;
-//using netDxf;
-//using System;
-//using System.Collections.Generic;
-//using System.Windows.Forms;
+﻿
 
-//namespace ETABS_CAD_Automation.Importers
-//{
-//    public class CADImporter
-//    {
-//        private cSapModel sapModel;
-//        private MaterialManager materialManager;
-//        private StoryManager storyManager;
-
-
-//        public CADImporter(cSapModel model)
-//        {
-//            sapModel = model;
-//            materialManager = new MaterialManager(model);
-//            storyManager = new StoryManager(model);
-//        }
-
-//        public bool ImportMultiFloorTypeCAD(
-//            List<FloorTypeConfig> floorConfigs,
-//            List<double> storyHeights,
-//            List<string> storyNames,
-//            string seismicZone)
-//        {
-//            try
-//            {
-//                sapModel.SetModelIsLocked(false);
-
-//                // STEP 1: Define materials
-//                materialManager.DefineMaterials();
-
-//                // STEP 2: Define all stories with custom names
-//                storyManager.DefineStoriesWithCustomNames(storyHeights, storyNames);
-
-//                // STEP 3: Import each floor type
-//                int currentStoryIndex = 0;
-//                double currentElevation = 0;
-
-//                foreach (var floorConfig in floorConfigs)
-//                {
-//                    MessageBox.Show(
-//                        $"Importing {floorConfig.Name}...\n\n" +
-//                        $"Floors: {floorConfig.Count}\n" +
-//                        $"Height: {floorConfig.Height}m\n" +
-//                        $"CAD: {System.IO.Path.GetFileName(floorConfig.CADFilePath)}",
-//                        "Import Progress");
-
-//                    // Load CAD file for this floor type
-//                    DxfDocument dxfDoc = DxfDocument.Load(floorConfig.CADFilePath);
-
-//                    if (dxfDoc == null)
-//                    {
-//                        MessageBox.Show($"Failed to load CAD file for {floorConfig.Name}", "Error");
-//                        return false;
-//                    }
-
-//                    // Create importers for this CAD file
-//                    BeamImporter beamImporter = new BeamImporter(sapModel, dxfDoc);
-//                    WallImporter wallImporter = new WallImporter(sapModel, dxfDoc, floorConfig.Height);
-//                    SlabImporter slabImporter = new SlabImporter(sapModel, dxfDoc);
-
-//                    // Define sections
-//                    wallImporter.DefineSections();
-//                    beamImporter.DefineSections();
-//                    slabImporter.DefineSections();
-
-//                    // Import this floor type for all its instances
-//                    for (int floor = 0; floor < floorConfig.Count; floor++)
-//                    {
-//                        string currentStoryName = storyNames[currentStoryIndex];
-
-//                        // Import walls (from base of story)
-//                        wallImporter.ImportWalls(
-//                            floorConfig.LayerMapping,
-//                            currentElevation,
-//                            currentStoryIndex);
-
-//                        // Import beams and slabs (at top of story)
-//                        double topElevation = currentElevation + floorConfig.Height;
-
-//                        beamImporter.ImportBeams(
-//                            floorConfig.LayerMapping,
-//                            topElevation,
-//                            currentStoryIndex + 1);
-
-//                        slabImporter.ImportSlabs(
-//                            floorConfig.LayerMapping,
-//                            topElevation,
-//                            currentStoryIndex + 1);
-
-//                        // Move to next story
-//                        currentElevation += floorConfig.Height;
-//                        currentStoryIndex++;
-//                    }
-
-//                    sapModel.View.RefreshView(0, false);
-//                }
-
-//                sapModel.View.RefreshView(0, true);
-
-//                MessageBox.Show(
-//                    $"✅ Import completed successfully!\n\n" +
-//                    $"Building Structure:\n" +
-//                    BuildImportSummary(floorConfigs, storyHeights.Count, currentElevation),
-//                    "Import Success");
-
-//                return true;
-//            }
-//            catch (Exception ex)
-//            {
-//                MessageBox.Show(
-//                    "Import failed:\n" +
-//                    ex.Message + "\n\n" +
-//                    ex.StackTrace,
-//                    "Error");
-//                return false;
-//            }
-//        }
-
-//        private string BuildImportSummary(List<FloorTypeConfig> configs, int totalStories, double totalHeight)
-//        {
-//            string summary = "";
-//            foreach (var config in configs)
-//            {
-//                summary += $"- {config.Name}: {config.Count} floor(s) × {config.Height:F2}m\n";
-//            }
-//            summary += $"\nTotal Stories: {totalStories}\n";
-//            summary += $"Total Height: {totalHeight:F2}m";
-//            return summary;
-//        }
-
-
-
-//        // Helper classes
-//        private class FrameData
-//        {
-//            public double X1, Y1, Z1, X2, Y2, Z2;
-//            public string Section;
-//        }
-
-//        private class AreaData
-//        {
-//            public double[] XCoords, YCoords, ZCoords;
-//            public string Property;
-//        }
-//    }
-//}
 // ============================================================================
-// FILE: Importers/CADImporterEnhanced.cs
+// FILE: Importers/CADImporterEnhanced.cs (UPDATED)
 // ============================================================================
 using ETABSv1;
 using ETABS_CAD_Automation.Core;
@@ -168,9 +14,6 @@ using System.Windows.Forms;
 
 namespace ETABS_CAD_Automation.Importers
 {
-    /// <summary>
-    /// Enhanced CAD importer with design standards integration
-    /// </summary>
     public class CADImporterEnhanced
     {
         private cSapModel sapModel;
@@ -184,11 +27,14 @@ namespace ETABS_CAD_Automation.Importers
             storyManager = new StoryManager(model);
         }
 
+
         public bool ImportMultiFloorTypeCAD(
             List<FloorTypeConfig> floorConfigs,
             List<double> storyHeights,
             List<string> storyNames,
-            string seismicZone)
+            string seismicZone,
+            Dictionary<string, int> beamDepths,
+            Dictionary<string, int> slabThicknesses)  // ADD THIS PARAMETER
         {
             try
             {
@@ -198,7 +44,7 @@ namespace ETABS_CAD_Automation.Importers
                 int totalTypicalFloors = CalculateTotalTypicalFloors(floorConfigs);
 
                 // Show design notes
-                ShowDesignNotes(totalTypicalFloors, seismicZone);
+                ShowDesignNotes(totalTypicalFloors, seismicZone, beamDepths, slabThicknesses); // ADD slabThicknesses
 
                 // STEP 1: Define materials
                 materialManager.DefineMaterials();
@@ -206,7 +52,10 @@ namespace ETABS_CAD_Automation.Importers
                 // STEP 2: Define all stories with custom names
                 storyManager.DefineStoriesWithCustomNames(storyHeights, storyNames);
 
-                // STEP 3: Import each floor type
+                // STEP 3: Load wall sections from template
+                WallThicknessCalculator.LoadAvailableWallSections(sapModel);
+
+                // STEP 4: Import each floor type
                 int currentStoryIndex = 0;
                 double currentElevation = 0;
 
@@ -221,6 +70,9 @@ namespace ETABS_CAD_Automation.Importers
 
                     // Load CAD file for this floor type
                     DxfDocument dxfDoc = DxfDocument.Load(floorConfig.CADFilePath);
+                 
+
+
 
                     if (dxfDoc == null)
                     {
@@ -228,10 +80,14 @@ namespace ETABS_CAD_Automation.Importers
                         return false;
                     }
 
-                    // Create importers for this CAD file
-                    BeamImporter beamImporter = new BeamImporter(sapModel, dxfDoc);
+                    // Create enhanced importers
+                    BeamImporterEnhanced beamImporter = new BeamImporterEnhanced(
+                        sapModel,
+                        dxfDoc,
+                        seismicZone,
+                        totalTypicalFloors,
+                        beamDepths);
 
-                    // Use enhanced wall importer with design standards
                     WallImporterEnhanced wallImporter = new WallImporterEnhanced(
                         sapModel,
                         dxfDoc,
@@ -239,43 +95,40 @@ namespace ETABS_CAD_Automation.Importers
                         totalTypicalFloors,
                         seismicZone);
 
-                    SlabImporter slabImporter = new SlabImporter(sapModel, dxfDoc);
+                    SlabImporterEnhanced slabImporter = new SlabImporterEnhanced(
+                        sapModel,
+                        dxfDoc,
+                        slabThicknesses); // PASS SLAB THICKNESSES
 
-                    // Define sections
-                    wallImporter.DefineSections();
-                    beamImporter.DefineSections();
-                    slabImporter.DefineSections();
-
-                    // Import this floor type for all its instances
+                    //Import this floor type for all its instances
                     for (int floor = 0; floor < floorConfig.Count; floor++)
-                    {
-                        string currentStoryName = storyNames[currentStoryIndex];
+                        {
+                            string currentStoryName = storyNames[currentStoryIndex];
 
-                        // Import walls (from base of story) with auto-thickness
-                        wallImporter.ImportWalls(
-                            floorConfig.LayerMapping,
-                            currentElevation,
-                            currentStoryIndex);
+                            // Import walls (from base of story)
+                            wallImporter.ImportWalls(
+                                floorConfig.LayerMapping,
+                                currentElevation,
+                                currentStoryIndex);
 
-                        // Import beams and slabs (at top of story)
-                        double topElevation = currentElevation + floorConfig.Height;
+                            // Import beams and slabs (at top of story)
+                            double topElevation = currentElevation + floorConfig.Height;
 
-                        beamImporter.ImportBeams(
-                            floorConfig.LayerMapping,
-                            topElevation,
-                            currentStoryIndex + 1);
+                            beamImporter.ImportBeams(
+                                floorConfig.LayerMapping,
+                                topElevation,
+                                currentStoryIndex + 1);
 
-                        slabImporter.ImportSlabs(
-                            floorConfig.LayerMapping,
-                            topElevation,
-                            currentStoryIndex + 1);
+                            slabImporter.ImportSlabs(
+                                floorConfig.LayerMapping,
+                                topElevation,
+                                currentStoryIndex + 1);
 
-                        // Move to next story
-                        currentElevation += floorConfig.Height;
-                        currentStoryIndex++;
-                    }
+                            // Move to next story
+                            currentElevation += floorConfig.Height;
+                            currentStoryIndex++;
+                        }
 
-                    // Show wall statistics for this floor type
                     System.Diagnostics.Debug.WriteLine($"\n{floorConfig.Name} Statistics:");
                     System.Diagnostics.Debug.WriteLine(wallImporter.GetImportStatistics());
 
@@ -287,7 +140,8 @@ namespace ETABS_CAD_Automation.Importers
                 MessageBox.Show(
                     $"✅ Import completed successfully!\n\n" +
                     $"Building Structure:\n" +
-                    BuildImportSummary(floorConfigs, storyHeights.Count, currentElevation, totalTypicalFloors, seismicZone),
+                    BuildImportSummary(floorConfigs, storyHeights.Count, currentElevation,
+                        totalTypicalFloors, seismicZone, beamDepths, slabThicknesses),
                     "Import Success");
 
                 return true;
@@ -305,14 +159,12 @@ namespace ETABS_CAD_Automation.Importers
 
         private int CalculateTotalTypicalFloors(List<FloorTypeConfig> configs)
         {
-            // Count only "Typical" floors for design standard calculations
             foreach (var config in configs)
             {
                 if (config.Name == "Typical")
                     return config.Count;
             }
 
-            // If no typical floors found, use total floor count as fallback
             int total = 0;
             foreach (var config in configs)
             {
@@ -321,12 +173,19 @@ namespace ETABS_CAD_Automation.Importers
             return total;
         }
 
-        private void ShowDesignNotes(int totalTypicalFloors, string seismicZone)
+        private void ShowDesignNotes(int totalTypicalFloors, string seismicZone, Dictionary<string, int> beamDepths, Dictionary<string, int> slabThicknesses)
         {
             string notes = WallThicknessCalculator.GetDesignNotes(totalTypicalFloors, seismicZone);
 
             notes += "\n\nWall Thickness Preview:\n";
             notes += GenerateThicknessTable(totalTypicalFloors, seismicZone);
+
+            notes += "\n\nBeam Configuration:\n";
+            notes += GenerateBeamConfigTable(seismicZone, beamDepths, totalTypicalFloors);
+
+
+            notes += "\n\nSlab Configuration:\n";
+            notes += GenerateSlabConfigTable(slabThicknesses); // ADD THIS
 
             var result = MessageBox.Show(
                 notes + "\n\nProceed with these design parameters?",
@@ -339,6 +198,54 @@ namespace ETABS_CAD_Automation.Importers
                 throw new Exception("Import cancelled by user");
             }
         }
+
+        private string GenerateSlabConfigTable(Dictionary<string, int> slabThicknesses)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("\n┌────────────────────────────┬─────────────────┐");
+            sb.AppendLine("│ Slab Type                  │ Thickness       │");
+            sb.AppendLine("├────────────────────────────┼─────────────────┤");
+            sb.AppendLine($"│ Lobby                      │ {slabThicknesses["Lobby"]}mm           │");
+            sb.AppendLine($"│ Stair                      │ {slabThicknesses["Stair"]}mm           │");
+            sb.AppendLine($"│ Regular (area-based)       │ 125-250mm       │");
+            sb.AppendLine($"│ Cantilever (span-based)    │ 125-200mm       │");
+            sb.AppendLine("└────────────────────────────┴─────────────────┘");
+
+            return sb.ToString();
+        }
+        private string GenerateBeamConfigTable(string zone, Dictionary<string, int> beamDepths, int floors)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("\n┌────────────────────────────┬─────────────────┐");
+            sb.AppendLine("│ Beam Type                  │ Section         │");
+            sb.AppendLine("├────────────────────────────┼─────────────────┤");
+
+            int gravityWidth = (zone == "Zone II" || zone == "Zone III") ? 200 : 240;
+
+            sb.AppendLine($"│ Internal Gravity           │ {gravityWidth}x{beamDepths["InternalGravity"]}mm      │");
+            sb.AppendLine($"│ Cantilever Gravity         │ {gravityWidth}x{beamDepths["CantileverGravity"]}mm      │");
+
+            // Get wall widths for main beams
+            int coreWidth = WallThicknessCalculator.GetRecommendedThickness(
+                floors, WallThicknessCalculator.WallType.CoreWall, zone, 2.0, false);
+            int periDeadWidth = WallThicknessCalculator.GetRecommendedThickness(
+                floors, WallThicknessCalculator.WallType.PeripheralDeadWall, zone, 2.0, false);
+            int periPortalWidth = WallThicknessCalculator.GetRecommendedThickness(
+                floors, WallThicknessCalculator.WallType.PeripheralPortalWall, zone, 2.0, false);
+            int internalWidth = WallThicknessCalculator.GetRecommendedThickness(
+                floors, WallThicknessCalculator.WallType.InternalWall, zone, 2.0, false);
+
+            sb.AppendLine($"│ Core Main                  │ {coreWidth}x{beamDepths["CoreMain"]}mm      │");
+            sb.AppendLine($"│ Peripheral Dead Main       │ {periDeadWidth}x{beamDepths["PeripheralDeadMain"]}mm      │");
+            sb.AppendLine($"│ Peripheral Portal Main     │ {periPortalWidth}x{beamDepths["PeripheralPortalMain"]}mm      │");
+            sb.AppendLine($"│ Internal Main              │ {internalWidth}x{beamDepths["InternalMain"]}mm      │");
+
+            sb.AppendLine("└────────────────────────────┴─────────────────┘");
+
+            return sb.ToString();
+        }
+
+      
 
         private string GenerateThicknessTable(int floors, string zone)
         {
@@ -374,9 +281,11 @@ namespace ETABS_CAD_Automation.Importers
 
             return sb.ToString();
         }
+    
+
 
         private string BuildImportSummary(List<FloorTypeConfig> configs, int totalStories,
-            double totalHeight, int typicalFloors, string seismicZone)
+            double totalHeight, int typicalFloors, string seismicZone, Dictionary<string, int> beamDepths, Dictionary<string, int > slabThicknesses)
         {
             StringBuilder summary = new StringBuilder();
 
@@ -389,9 +298,13 @@ namespace ETABS_CAD_Automation.Importers
             summary.AppendLine($"Total Height: {totalHeight:F2}m");
             summary.AppendLine($"Typical Floors: {typicalFloors}");
             summary.AppendLine($"Seismic Zone: {seismicZone}");
-            summary.AppendLine($"\n✓ Wall thickness per TDD/PKO standards");
-            summary.AppendLine($"✓ Auto-classified wall types");
-            summary.AppendLine($"✓ Short wall adjustments applied");
+
+            int gravityWidth = (seismicZone == "Zone II" || seismicZone == "Zone III") ? 200 : 240;
+            summary.AppendLine($"\n✓ Gravity beams: {gravityWidth}mm width (zone-based)");
+            summary.AppendLine($"✓ Main beams: match wall thickness");
+            summary.AppendLine($"✓ Slabs: Lobby {slabThicknesses["Lobby"]}mm, Stair {slabThicknesses["Stair"]}mm");
+            summary.AppendLine($"✓ Wall thickness per TDD/PKO standards");
+            summary.AppendLine($"✓ Auto-classified wall & beam types");
 
             return summary.ToString();
         }

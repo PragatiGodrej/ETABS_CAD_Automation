@@ -1,5 +1,6 @@
-﻿// ============================================================================
-// FILE: UI/MainForm.cs
+﻿
+// ============================================================================
+// FILE: UI/MainForm.cs (UPDATED)
 // ============================================================================
 using System;
 using System.Collections.Generic;
@@ -74,6 +75,8 @@ namespace ETABS_CAD_Automation
                     {
                         var floorConfigs = importForm.FloorConfigs;
                         string seismicZone = importForm.SeismicZone;
+                        var beamDepths = importForm.BeamDepths; // GET BEAM DEPTHS FROM FORM
+                        var slabThicknesses = importForm.SlabThicknesses; // GET SLAB THICKNESS FROM FORM IF NEEDED
 
                         // Calculate total stories and heights
                         int totalStories = 0;
@@ -106,8 +109,10 @@ namespace ETABS_CAD_Automation
 
                         double totalHeight = CalculateTotalHeight(storyHeights);
 
-                        // Build confirmation message
+                        // Build confirmation message with beam configuration
                         string heightBreakdown = BuildHeightBreakdown(storyHeights, storyNames);
+                        string beamConfig = BuildBeamConfigSummary(seismicZone, beamDepths);
+                        string slabConfig = BuildSlabConfigSummary(slabThicknesses);
 
                         var result = MessageBox.Show(
                             $"Final Import Configuration:\n\n" +
@@ -115,6 +120,8 @@ namespace ETABS_CAD_Automation
                             $"Total Building Height: {totalHeight:F2}m\n" +
                             $"Seismic Zone: {seismicZone}\n\n" +
                             heightBreakdown + "\n" +
+                            beamConfig + "\n" +
+                            slabConfig + "\n" +
                             "Proceed with import?",
                             "⚠️ Final Confirmation",
                             MessageBoxButtons.YesNo,
@@ -126,13 +133,22 @@ namespace ETABS_CAD_Automation
                             return;
                         }
 
-                        // Import with multi-floor-type configuration
+
+                        
+
+                  
+                        // Import with multi-floor-type configuration and beam depths
                         CADImporterEnhanced importer = new CADImporterEnhanced(etabs.SapModel);
+
+                
+
                         bool success = importer.ImportMultiFloorTypeCAD(
                             floorConfigs,
                             storyHeights,
                             storyNames,
-                            seismicZone);
+                            seismicZone,
+                            beamDepths,
+                            slabThicknesses); // PASS BEAM DEPTHS
 
                         if (success)
                         {
@@ -142,6 +158,8 @@ namespace ETABS_CAD_Automation
                                 $"- Total Stories: {totalStories}\n" +
                                 $"- Building Height: {totalHeight:F2}m\n" +
                                 $"- Seismic Zone: {seismicZone}\n\n" +
+                                "Beam Configuration Applied:\n" +
+                                BuildBeamConfigSummary(seismicZone, beamDepths) + "\n\n" +
                                 "View Your Building:\n" +
                                 "1. Check bottom of ETABS window\n" +
                                 "2. Use story dropdown to navigate floors\n" +
@@ -159,6 +177,9 @@ namespace ETABS_CAD_Automation
                                 MessageBoxButtons.OK,
                                 MessageBoxIcon.Warning);
                         }
+
+
+                    
                     }
                 }
             }
@@ -172,6 +193,16 @@ namespace ETABS_CAD_Automation
             }
         }
 
+        private string BuildSlabConfigSummary(Dictionary<string, int> slabThicknesses)
+        {
+            string summary = "Slab Configuration:\n";
+            summary += $"  - Lobby: {slabThicknesses["Lobby"]}mm\n";
+            summary += $"  - Stair: {slabThicknesses["Stair"]}mm\n";
+            summary += $"  - Regular: 125-250mm (area-based)\n";
+            summary += $"  - Cantilever: 125-200mm (span-based)\n";
+
+            return summary;
+        }
         private string BuildHeightBreakdown(List<double> storyHeights, List<string> storyNames)
         {
             string breakdown = "Story Height Breakdown:\n";
@@ -184,6 +215,23 @@ namespace ETABS_CAD_Automation
             }
 
             return breakdown;
+        }
+
+        private string BuildBeamConfigSummary(string seismicZone, Dictionary<string, int> beamDepths)
+        {
+            int gravityWidth = (seismicZone == "Zone II" || seismicZone == "Zone III") ? 200 : 240;
+
+            string summary = "Beam Configuration:\n";
+            summary += $"Gravity Beams (Width: {gravityWidth}mm):\n";
+            summary += $"  - Internal Gravity: {gravityWidth}x{beamDepths["InternalGravity"]}mm\n";
+            summary += $"  - Cantilever Gravity: {gravityWidth}x{beamDepths["CantileverGravity"]}mm\n";
+            summary += $"Main Beams (Width: matches wall):\n";
+            summary += $"  - Core Main: {beamDepths["CoreMain"]}mm depth\n";
+            summary += $"  - Peripheral Dead Main: {beamDepths["PeripheralDeadMain"]}mm depth\n";
+            summary += $"  - Peripheral Portal Main: {beamDepths["PeripheralPortalMain"]}mm depth\n";
+            summary += $"  - Internal Main: {beamDepths["InternalMain"]}mm depth\n";
+
+            return summary;
         }
 
         private double CalculateTotalHeight(List<double> storyHeights)

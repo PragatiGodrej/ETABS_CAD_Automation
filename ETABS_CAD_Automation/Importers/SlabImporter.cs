@@ -1,6 +1,6 @@
 ﻿
 // ============================================================================
-// FILE: Importers/SlabImporter.cs (FIXED VERSION)
+// FILE: Importers/SlabImporter.cs (MERGED VERSION)
 // ============================================================================
 using ETABSv1;
 using netDxf;
@@ -8,58 +8,309 @@ using netDxf.Entities;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using static netDxf.Entities.HatchBoundaryPath;
 
 namespace ETABS_CAD_Automation.Importers
 {
-    public class SlabImporter
+    public class SlabImporterEnhanced
     {
         private cSapModel sapModel;
         private DxfDocument dxfDoc;
+        private Dictionary<string, int> slabConfig;
+
         private const double MM_TO_M = 0.001;
         private const double CLOSURE_TOLERANCE = 10000.0; // 10000mm (10m) tolerance - auto-close large gaps
         private const double MIN_AREA = 0.01; // 0.01 m² minimum area
 
         private double M(double mm) => mm * MM_TO_M;
 
-        public SlabImporter(cSapModel model, DxfDocument doc)
+        // Store available slab sections from template
+        private static Dictionary<string, SlabSectionInfo> availableSlabSections =
+            new Dictionary<string, SlabSectionInfo>();
+
+        private class SlabSectionInfo
+        {
+            public string SectionName { get; set; }
+            public int ThicknessMm { get; set; }
+            public string Grade { get; set; }
+        }
+
+        // Slab thickness rules based on area (from your configuration)
+        private static readonly Dictionary<int, double> SlabThicknessAreaRules = new Dictionary<int, double>
+        {
+            { 125, 14 },   // 125mm for area <= 14 m²
+            { 135, 17 },   // 135mm for area <= 17 m²
+            { 150, 22 },   // 150mm for area <= 22 m²
+            { 160, 25 },   // 160mm for area <= 25 m²
+            { 175, 32 },   // 175mm for area <= 32 m²
+            { 200, 42 },   // 200mm for area <= 42 m²
+            { 250, 70 }    // 250mm for area <= 70 m²
+        };
+
+        // Cantilever thickness rules based on span (from your configuration)
+        private static readonly Dictionary<int, double> CantileverThicknessRules = new Dictionary<int, double>
+        {
+            { 125, 1.0 },   // 125mm for span <= 1.0m
+            { 160, 1.5 },   // 160mm for span <= 1.5m
+            { 180, 1.8 },   // 180mm for span <= 1.8m
+            { 200, 5.0 }    // 200mm for span <= 5.0m
+        };
+
+        public SlabImporterEnhanced(cSapModel model, DxfDocument doc, Dictionary<string, int> config = null)
         {
             sapModel = model;
             dxfDoc = doc;
+            slabConfig = config ?? new Dictionary<string, int>
+            {
+                { "Lobby", 160 },
+                { "Stair", 175 }
+            };
+
+            LoadAvailableSlabSections();
         }
 
-        public void DefineSections()
+        private void LoadAvailableSlabSections()
         {
+            if (availableSlabSections.Count > 0) return;
+
             try
             {
-                sapModel.PropArea.SetSlab("SLAB100", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.10, 12, "CONC", "CONC");
+                availableSlabSections.Clear();
 
-                sapModel.PropArea.SetSlab("SLAB125", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.125, 12, "CONC", "CONC");
+                int numSections = 0;
+                string[] sectionNames = null;
 
-                sapModel.PropArea.SetSlab("SLAB150", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.15, 12, "CONC", "CONC");
+                int ret = sapModel.PropArea.GetNameList(ref numSections, ref sectionNames);
 
-                sapModel.PropArea.SetSlab("SLAB175", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.175, 12, "CONC", "CONC");
+                if (ret == 0 && sectionNames != null)
+                {
+                    // Pattern: S160SM45 = 160mm thickness, M45 grade
+                    Regex slabPattern = new Regex(@"^S(\d+)SM(\d+)", RegexOptions.IgnoreCase);
 
-                sapModel.PropArea.SetSlab("SLAB200", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.20, 12, "CONC", "CONC");
+                    foreach (string sectionName in sectionNames)
+                    {
+                        Match match = slabPattern.Match(sectionName);
 
-                sapModel.PropArea.SetSlab("SLAB225", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.225, 12, "CONC", "CONC");
+                        if (match.Success)
+                        {
+                            int thicknessMm = int.Parse(match.Groups[1].Value);
+                            string grade = match.Groups[2].Value;
 
-                sapModel.PropArea.SetSlab("SLAB250", eSlabType.Slab, eShellType.ShellThin,
-                    "CONC", 0.25, 12, "CONC", "CONC");
+                            availableSlabSections[sectionName] = new SlabSectionInfo
+                            {
+                                SectionName = sectionName,
+                                ThicknessMm = thicknessMm,
+                                Grade = grade
+                            };
 
-                System.Diagnostics.Debug.WriteLine("✓ Slab sections defined successfully");
+                            System.Diagnostics.Debug.WriteLine(
+                                $"Loaded slab: {sectionName} = {thicknessMm}mm (M{grade})");
+                        }
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine(
+                    $"\n✓ Loaded {availableSlabSections.Count} slab sections from template");
+
+                if (availableSlabSections.Count == 0)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        "⚠ No template slab sections found. Using fallback definitions.");
+                    DefineFallbackSections();
+                }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"❌ Error defining slab sections: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"❌ Error loading slab sections: {ex.Message}");
+                DefineFallbackSections();
+            }
+        }
+
+        private void DefineFallbackSections()
+        {
+            // Fallback: Define standard slab sections if template doesn't have them
+            try
+            {
+                var thicknesses = new[] { 100, 125, 135, 150, 160, 175, 180, 200, 225, 250 };
+
+                foreach (int thickness in thicknesses)
+                {
+                    string sectionName = $"SLAB{thickness}";
+
+                    sapModel.PropArea.SetSlab(
+                        sectionName,
+                        eSlabType.Slab,
+                        eShellType.ShellThin,
+                        "CONC",
+                        thickness * 0.001, // Convert mm to m
+                        12,
+                        "CONC",
+                        "CONC");
+
+                    availableSlabSections[sectionName] = new SlabSectionInfo
+                    {
+                        SectionName = sectionName,
+                        ThicknessMm = thickness,
+                        Grade = "Default"
+                    };
+                }
+
+                System.Diagnostics.Debug.WriteLine("✓ Fallback slab sections defined successfully");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"❌ Error defining fallback sections: {ex.Message}");
                 throw;
             }
+        }
+
+        private string GetClosestSlabSection(int requiredThickness, string preferredGrade = null)
+        {
+            if (availableSlabSections.Count == 0)
+            {
+                throw new InvalidOperationException("No slab sections available.");
+            }
+
+            string bestMatch = null;
+            int minDifference = int.MaxValue;
+
+            // First try to find exact match with preferred grade
+            if (!string.IsNullOrEmpty(preferredGrade))
+            {
+                foreach (var kvp in availableSlabSections)
+                {
+                    var section = kvp.Value;
+                    if (section.ThicknessMm == requiredThickness && section.Grade == preferredGrade)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"  Exact match: {kvp.Key} ({section.ThicknessMm}mm M{section.Grade})");
+                        return kvp.Key;
+                    }
+                }
+            }
+
+            // Find closest thickness
+            foreach (var kvp in availableSlabSections)
+            {
+                var section = kvp.Value;
+                int difference = Math.Abs(section.ThicknessMm - requiredThickness);
+
+                if (difference < minDifference)
+                {
+                    minDifference = difference;
+                    bestMatch = kvp.Key;
+                }
+            }
+
+            if (bestMatch != null)
+            {
+                var matched = availableSlabSections[bestMatch];
+                System.Diagnostics.Debug.WriteLine(
+                    $"  Required: {requiredThickness}mm → Using: {bestMatch} ({matched.ThicknessMm}mm)");
+                return bestMatch;
+            }
+
+            throw new InvalidOperationException(
+                $"No suitable slab section found for {requiredThickness}mm.");
+        }
+
+        private int DetermineSlabThicknessFromArea(double areaM2)
+        {
+            foreach (var rule in SlabThicknessAreaRules.OrderBy(r => r.Key))
+            {
+                if (areaM2 <= rule.Value)
+                {
+                    return rule.Key;
+                }
+            }
+            return 250; // Default for very large areas
+        }
+
+        private int DetermineCantileverThickness(double spanM)
+        {
+            foreach (var rule in CantileverThicknessRules.OrderBy(r => r.Key))
+            {
+                if (spanM <= rule.Value)
+                {
+                    return rule.Key;
+                }
+            }
+            return 200; // Default for long cantilevers
+        }
+
+        private double CalculateMaxSpan(List<netDxf.Vector2> points)
+        {
+            if (points.Count < 2) return 0;
+
+            double maxSpan = 0;
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                for (int j = i + 1; j < points.Count; j++)
+                {
+                    double dx = (points[j].X - points[i].X) * MM_TO_M;
+                    double dy = (points[j].Y - points[i].Y) * MM_TO_M;
+                    double distance = Math.Sqrt(dx * dx + dy * dy);
+
+                    if (distance > maxSpan)
+                        maxSpan = distance;
+                }
+            }
+
+            return maxSpan;
+        }
+
+        private string DetermineSlabSection(string layerName, List<netDxf.Vector2> points)
+        {
+            string upper = layerName.ToUpperInvariant();
+            int thickness;
+
+            // Lobby slabs - use configured thickness
+            if (upper.Contains("LOBBY") || upper.Equals("S-LOBBY", StringComparison.OrdinalIgnoreCase))
+            {
+                thickness = slabConfig["Lobby"];
+                System.Diagnostics.Debug.WriteLine($"  Lobby slab: {thickness}mm");
+                return GetClosestSlabSection(thickness);
+            }
+
+            // Stair slabs - use configured thickness
+            if (upper.Contains("STAIR") || upper.Equals("S-STAIR", StringComparison.OrdinalIgnoreCase))
+            {
+                thickness = slabConfig["Stair"];
+                System.Diagnostics.Debug.WriteLine($"  Stair slab: {thickness}mm");
+                return GetClosestSlabSection(thickness);
+            }
+
+            // Cantilever slabs - based on span
+            if (upper.Contains("CANTILEVER") || upper.Contains("BALCONY") || upper.Contains("CHAJJA") ||
+                upper.Equals("S-BALCONY SLABS", StringComparison.OrdinalIgnoreCase) ||
+                upper.Equals("S-CANTILVER BALCONY", StringComparison.OrdinalIgnoreCase))
+            {
+                double spanM = CalculateMaxSpan(points);
+                thickness = DetermineCantileverThickness(spanM);
+                System.Diagnostics.Debug.WriteLine($"  Cantilever slab: span={spanM:F2}m → {thickness}mm");
+                return GetClosestSlabSection(thickness);
+            }
+
+            // Regular slabs - based on area
+            double areaM2 = Math.Abs(CalculatePolygonArea(points));
+            thickness = DetermineSlabThicknessFromArea(areaM2);
+
+            string slabType = "Regular";
+            if (upper.Contains("RESIDENTIAL") || upper.Equals("S-RESIDENTIAL", StringComparison.OrdinalIgnoreCase))
+                slabType = "Residential";
+            else if (upper.Contains("KITCHEN") || upper.Equals("S-KITCHEN", StringComparison.OrdinalIgnoreCase))
+                slabType = "Kitchen";
+            else if (upper.Contains("TOILET") || upper.Equals("S-TOILET", StringComparison.OrdinalIgnoreCase))
+                slabType = "Toilet";
+            else if (upper.Contains("UTILITY") || upper.Equals("S-UTILITY", StringComparison.OrdinalIgnoreCase))
+                slabType = "Utility";
+            else if (upper.Contains("SERVICE") || upper.Equals("S-SERVICE SLABS", StringComparison.OrdinalIgnoreCase))
+                slabType = "Service";
+
+            System.Diagnostics.Debug.WriteLine($"  {slabType} slab: area={areaM2:F2}m² → {thickness}mm");
+            return GetClosestSlabSection(thickness);
         }
 
         public void ImportSlabs(Dictionary<string, string> layerMapping, double elevation, int story)
@@ -80,8 +331,7 @@ namespace ETABS_CAD_Automation.Importers
 
             foreach (string layerName in slabLayers)
             {
-                string section = DetermineSlabSection(layerName);
-                System.Diagnostics.Debug.WriteLine($"\n--- Layer: {layerName} → Section: {section} ---");
+                System.Diagnostics.Debug.WriteLine($"\n--- Layer: {layerName} ---");
 
                 // Process Polylines2D
                 var polylines = dxfDoc.Entities.Polylines2D
@@ -91,7 +341,7 @@ namespace ETABS_CAD_Automation.Importers
 
                 foreach (var poly in polylines)
                 {
-                    var result = CreateSlabFromPolyline(poly, elevation, section, story);
+                    var result = CreateSlabFromPolyline(poly, elevation, layerName, story);
                     if (result == SlabCreationResult.Success) successCount++;
                     else if (result == SlabCreationResult.Failed) failCount++;
                     else skippedCount++;
@@ -105,7 +355,7 @@ namespace ETABS_CAD_Automation.Importers
 
                 foreach (var hatch in hatches)
                 {
-                    var result = CreateSlabFromHatch(hatch, elevation, section, story);
+                    var result = CreateSlabFromHatch(hatch, elevation, layerName, story);
                     if (result == SlabCreationResult.Success) successCount++;
                     else if (result == SlabCreationResult.Failed) failCount++;
                     else skippedCount++;
@@ -126,7 +376,7 @@ namespace ETABS_CAD_Automation.Importers
             Skipped
         }
 
-        private SlabCreationResult CreateSlabFromPolyline(Polyline2D poly, double elevation, string section, int story)
+        private SlabCreationResult CreateSlabFromPolyline(Polyline2D poly, double elevation, string layerName, int story)
         {
             try
             {
@@ -151,6 +401,9 @@ namespace ETABS_CAD_Automation.Importers
                     return SlabCreationResult.Skipped;
                 }
 
+                // Determine section based on layer name and geometry
+                string section = DetermineSlabSection(layerName, points);
+
                 return CreateSlabFromPoints(points, elevation, section, story);
             }
             catch (Exception ex)
@@ -160,7 +413,7 @@ namespace ETABS_CAD_Automation.Importers
             }
         }
 
-        private SlabCreationResult CreateSlabFromHatch(Hatch hatch, double elevation, string section, int story)
+        private SlabCreationResult CreateSlabFromHatch(Hatch hatch, double elevation, string layerName, int story)
         {
             try
             {
@@ -182,6 +435,9 @@ namespace ETABS_CAD_Automation.Importers
                             System.Diagnostics.Debug.WriteLine($"⊘ Skipped: Hatch boundary not closed");
                             continue;
                         }
+
+                        // Determine section based on layer name and geometry
+                        string section = DetermineSlabSection(layerName, vertices);
 
                         var result = CreateSlabFromPoints(vertices, elevation, section, story);
                         if (result == SlabCreationResult.Success)
@@ -212,19 +468,16 @@ namespace ETABS_CAD_Automation.Importers
                 }
                 else if (edge is HatchBoundaryPath.Arc arcEdge)
                 {
-                    // Tessellate arc into line segments
                     var arcPoints = TessellateArc(arcEdge);
                     vertices.AddRange(arcPoints);
                 }
                 else if (edge is HatchBoundaryPath.Ellipse ellipseEdge)
                 {
-                    // Tessellate ellipse into line segments
                     var ellipsePoints = TessellateEllipse(ellipseEdge);
                     vertices.AddRange(ellipsePoints);
                 }
                 else if (edge is HatchBoundaryPath.Spline splineEdge)
                 {
-                    // Use control points (simplified approach)
                     foreach (var cp in splineEdge.ControlPoints)
                     {
                         vertices.Add(new netDxf.Vector2(cp.X, cp.Y));
@@ -238,12 +491,11 @@ namespace ETABS_CAD_Automation.Importers
         private List<netDxf.Vector2> TessellateArc(HatchBoundaryPath.Arc arc)
         {
             List<netDxf.Vector2> points = new List<netDxf.Vector2>();
-            int segments = 16; // Number of segments to approximate the arc
+            int segments = 16;
 
             double startAngle = arc.StartAngle * Math.PI / 180.0;
             double endAngle = arc.EndAngle * Math.PI / 180.0;
 
-            // Handle arc direction
             if (endAngle < startAngle)
                 endAngle += 2 * Math.PI;
 
@@ -263,7 +515,7 @@ namespace ETABS_CAD_Automation.Importers
         private List<netDxf.Vector2> TessellateEllipse(HatchBoundaryPath.Ellipse ellipse)
         {
             List<netDxf.Vector2> points = new List<netDxf.Vector2>();
-            int segments = 24; // Number of segments
+            int segments = 24;
 
             double startAngle = ellipse.StartAngle * Math.PI / 180.0;
             double endAngle = ellipse.EndAngle * Math.PI / 180.0;
@@ -273,7 +525,6 @@ namespace ETABS_CAD_Automation.Importers
 
             double angleStep = (endAngle - startAngle) / segments;
 
-            // Calculate semi-major and semi-minor axes
             double majorAxis = Math.Sqrt(ellipse.EndMajorAxis.X * ellipse.EndMajorAxis.X +
                                          ellipse.EndMajorAxis.Y * ellipse.EndMajorAxis.Y);
             double minorAxis = majorAxis * ellipse.MinorRatio;
@@ -281,7 +532,6 @@ namespace ETABS_CAD_Automation.Importers
             for (int i = 0; i <= segments; i++)
             {
                 double angle = startAngle + i * angleStep;
-                // Simplified ellipse parametric equation
                 double x = ellipse.Center.X + majorAxis * Math.Cos(angle);
                 double y = ellipse.Center.Y + minorAxis * Math.Sin(angle);
                 points.Add(new netDxf.Vector2(x, y));
@@ -304,15 +554,13 @@ namespace ETABS_CAD_Automation.Importers
 
             if (gap < CLOSURE_TOLERANCE)
             {
-                // Remove last point if it's very close to first (near duplicate)
-                if (gap < 0.1) // Less than 0.1mm
+                if (gap < 0.1)
                 {
                     points.RemoveAt(points.Count - 1);
                     System.Diagnostics.Debug.WriteLine($"  Removed duplicate last vertex (gap: {gap:F4}mm)");
                 }
                 else
                 {
-                    // Auto-close by adding a line segment
                     System.Diagnostics.Debug.WriteLine($"  Auto-closing polyline (gap: {gap:F2}mm)");
                 }
                 return true;
@@ -333,34 +581,28 @@ namespace ETABS_CAD_Automation.Importers
                     return SlabCreationResult.Skipped;
                 }
 
-                // Validate area is not too small
+                // Validate area
                 double polygonArea = CalculatePolygonArea(points);
                 if (Math.Abs(polygonArea) < MIN_AREA)
                 {
-                    System.Diagnostics.Debug.WriteLine($"⊘ Area too small: {Math.Abs(polygonArea):F4} m² (min: {MIN_AREA} m²)");
+                    System.Diagnostics.Debug.WriteLine($"⊘ Area too small: {Math.Abs(polygonArea):F4} m²");
                     return SlabCreationResult.Skipped;
                 }
 
-                // Ensure counter-clockwise winding (positive area)
+                // Ensure counter-clockwise winding
                 if (polygonArea < 0)
                 {
                     points.Reverse();
-                    System.Diagnostics.Debug.WriteLine($"  Reversed winding order (was clockwise)");
+                    System.Diagnostics.Debug.WriteLine($"  Reversed winding order");
                 }
 
-                // Remove collinear/duplicate points
+                // Clean points
                 var cleanedPoints = RemoveDuplicateAndCollinearPoints(points);
 
                 if (cleanedPoints.Count < 3)
                 {
-                    System.Diagnostics.Debug.WriteLine($"⊘ After cleaning, only {cleanedPoints.Count} vertices remain");
+                    System.Diagnostics.Debug.WriteLine($"⊘ After cleaning, only {cleanedPoints.Count} vertices");
                     return SlabCreationResult.Skipped;
-                }
-
-                // Check for self-intersection
-                if (HasSelfIntersection(cleanedPoints))
-                {
-                    System.Diagnostics.Debug.WriteLine($"⚠ Warning: Polygon may be self-intersecting - attempting import anyway");
                 }
 
                 int n = cleanedPoints.Count;
@@ -395,35 +637,6 @@ namespace ETABS_CAD_Automation.Importers
                 else
                 {
                     System.Diagnostics.Debug.WriteLine($"❌ FAILED: AddByPoint returned {ret}");
-                    System.Diagnostics.Debug.WriteLine($"   First point: ({M(cleanedPoints[0].X):F3}, {M(cleanedPoints[0].Y):F3}, {elevation:F3})");
-                    System.Diagnostics.Debug.WriteLine($"   Vertices: {n}, Area: {Math.Abs(CalculatePolygonArea(cleanedPoints)):F2} m²");
-
-                    // Try reversing winding order as last resort
-                    cleanedPoints.Reverse();
-                    System.Diagnostics.Debug.WriteLine($"   Retrying with reversed order...");
-
-                    // Recreate points with reversed order
-                    for (int i = 0; i < n; i++)
-                    {
-                        string pointName = "";
-                        sapModel.PointObj.AddCartesian(
-                            M(cleanedPoints[i].X),
-                            M(cleanedPoints[i].Y),
-                            elevation,
-                            ref pointName,
-                            "Global");
-                        pts[i] = pointName;
-                    }
-
-                    ret = sapModel.AreaObj.AddByPoint(n, ref pts, ref areaName, section);
-
-                    if (ret == 0 && !string.IsNullOrEmpty(areaName))
-                    {
-                        sapModel.AreaObj.SetGroupAssign(areaName, storyName);
-                        System.Diagnostics.Debug.WriteLine($"✓ SUCCESS (reversed): {areaName}");
-                        return SlabCreationResult.Success;
-                    }
-
                     return SlabCreationResult.Failed;
                 }
             }
@@ -440,14 +653,13 @@ namespace ETABS_CAD_Automation.Importers
                 return points;
 
             List<netDxf.Vector2> cleaned = new List<netDxf.Vector2>();
-            const double epsilon = 0.001; // 0.001mm tolerance
+            const double epsilon = 0.001;
 
             for (int i = 0; i < points.Count; i++)
             {
                 var current = points[i];
                 var next = points[(i + 1) % points.Count];
 
-                // Skip duplicate points
                 double dist = Math.Sqrt(
                     Math.Pow(next.X - current.X, 2) +
                     Math.Pow(next.Y - current.Y, 2));
@@ -474,91 +686,7 @@ namespace ETABS_CAD_Automation.Importers
                 polygonArea -= points[j].X * points[i].Y;
             }
 
-            // Return signed area (positive = CCW, negative = CW)
-            return (polygonArea / 2.0) * MM_TO_M * MM_TO_M; // Convert to m²
-        }
-
-        private bool HasSelfIntersection(List<netDxf.Vector2> points)
-        {
-            if (points.Count < 4)
-                return false;
-
-            // Check if any non-adjacent edges intersect
-            for (int i = 0; i < points.Count; i++)
-            {
-                int i1 = i;
-                int i2 = (i + 1) % points.Count;
-
-                for (int j = i + 2; j < points.Count; j++)
-                {
-                    // Don't check adjacent edges or last edge with first edge
-                    if (j == i || Math.Abs(j - i) == 1 || (i == 0 && j == points.Count - 1))
-                        continue;
-
-                    int j1 = j;
-                    int j2 = (j + 1) % points.Count;
-
-                    if (DoLineSegmentsIntersect(points[i1], points[i2], points[j1], points[j2]))
-                        return true;
-                }
-            }
-
-            return false;
-        }
-
-        private bool DoLineSegmentsIntersect(netDxf.Vector2 p1, netDxf.Vector2 p2,
-                                             netDxf.Vector2 p3, netDxf.Vector2 p4)
-        {
-            double d = (p2.X - p1.X) * (p4.Y - p3.Y) - (p2.Y - p1.Y) * (p4.X - p3.X);
-
-            if (Math.Abs(d) < 0.0001) // Parallel or collinear
-                return false;
-
-            double t = ((p3.X - p1.X) * (p4.Y - p3.Y) - (p3.Y - p1.Y) * (p4.X - p3.X)) / d;
-            double u = ((p3.X - p1.X) * (p2.Y - p1.Y) - (p3.Y - p1.Y) * (p2.X - p1.X)) / d;
-
-            return (t >= 0 && t <= 1 && u >= 0 && u <= 1);
-        }
-
-        private string DetermineSlabSection(string layerName)
-        {
-            if (string.IsNullOrWhiteSpace(layerName))
-                return "SLAB150";
-
-            string upper = layerName.ToUpperInvariant();
-
-            // Explicit thickness (highest priority)
-            if (upper.Contains("250") || upper.Contains("_250")) return "SLAB250";
-            if (upper.Contains("225") || upper.Contains("_225")) return "SLAB225";
-            if (upper.Contains("200") || upper.Contains("_200")) return "SLAB200";
-            if (upper.Contains("175") || upper.Contains("_175")) return "SLAB175";
-            if (upper.Contains("150") || upper.Contains("_150")) return "SLAB150";
-            if (upper.Contains("125") || upper.Contains("_125")) return "SLAB125";
-            if (upper.Contains("100") || upper.Contains("_100")) return "SLAB100";
-
-            // Structural/heavy-duty
-            if (upper.Contains("TRANSFER") || upper.Contains("PODIUM") || upper.Contains("PARKING"))
-                return "SLAB250";
-
-            // Roof/stairs/basement
-            if (upper.Contains("ROOF") || upper.Contains("TERRACE") || upper.Contains("STAIR"))
-                return "SLAB200";
-
-            if (upper.Contains("BASEMENT") || upper.Contains("LOWER"))
-                return "SLAB200";
-
-            // Residential
-            if (upper.Contains("RESIDENTIAL") || upper.Contains("APARTMENT") || upper.Contains("FLAT") ||
-                upper.Contains("LIVINGROOM") || upper.Contains("KITCHEN") || upper.Contains("BEDROOM") ||
-                upper.Contains("TOILET") || upper.Contains("BATHROOM"))
-                return "SLAB150";
-
-            // Light-duty
-            if (upper.Contains("CORRIDOR") || upper.Contains("LOBBY") || upper.Contains("BALCONY") ||
-                upper.Contains("SERVICE") || upper.Contains("UTILITY") || upper.Contains("CHAJJA"))
-                return "SLAB125";
-
-            return "SLAB150";
+            return (polygonArea / 2.0) * MM_TO_M * MM_TO_M;
         }
 
         private string GetStoryName(int story)
