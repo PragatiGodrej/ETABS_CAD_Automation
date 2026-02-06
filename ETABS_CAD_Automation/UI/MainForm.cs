@@ -87,6 +87,10 @@ namespace ETABS_CAD_Automation
 
                         foreach (var config in floorConfigs)
                         {
+
+                            // ADD THIS DEBUG LINE:
+                            System.Diagnostics.Debug.WriteLine($"DEBUG: {config.Name} height = {config.Height}");
+
                             for (int i = 0; i < config.Count; i++)
                             {
                                 storyHeights.Add(config.Height);
@@ -134,13 +138,13 @@ namespace ETABS_CAD_Automation
                         }
 
 
-                        
 
-                  
+
+
                         // Import with multi-floor-type configuration and beam depths
                         CADImporterEnhanced importer = new CADImporterEnhanced(etabs.SapModel);
 
-                
+
 
                         bool success = importer.ImportMultiFloorTypeCAD(
                             floorConfigs,
@@ -179,7 +183,7 @@ namespace ETABS_CAD_Automation
                         }
 
 
-                    
+
                     }
                 }
             }
