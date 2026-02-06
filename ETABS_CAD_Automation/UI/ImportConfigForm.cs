@@ -24,6 +24,7 @@ namespace ETABS_CAD_Automation
         private Button btnCancel;
         private CheckBox chkBasement;
         private CheckBox chkPodium;
+        private CheckBox chkTerrace;
         private NumericUpDown numBasementLevels;
         private NumericUpDown numPodiumLevels;
         private NumericUpDown numTypicalLevels;
@@ -31,6 +32,7 @@ namespace ETABS_CAD_Automation
         private NumericUpDown numPodiumHeight;
         private NumericUpDown numEDeckHeight;
         private NumericUpDown numTypicalHeight;
+        private NumericUpDown numTerraceheight;
         private ComboBox cmbSeismicZone;
 
         // Beam depth controls
@@ -730,6 +732,61 @@ namespace ETABS_CAD_Automation
 
             yPos += 100;
 
+            //Terrace Section
+
+
+            GroupBox grpTerrace = new GroupBox
+            {
+                Text = "Terrace Floor",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(820, 90)
+            };
+            tab.Controls.Add(grpTerrace);
+
+            chkTerrace = new CheckBox
+            {
+                Text = "Include Terrace Floor",
+                Location = new System.Drawing.Point(20, 25),
+                Size = new System.Drawing.Size(200, 20)
+            };
+
+            chkTerrace.CheckedChanged += ChekTerrace_CheckedChanged;
+            grpTerrace.Controls.Add(chkTerrace);
+
+            Label lblTerraceHeight = new Label
+            {
+                Text = "Terrace Height (m):",
+                Location = new System.Drawing.Point(40, 52),
+                Size = new System.Drawing.Size(150, 20)
+            };
+            grpTerrace.Controls.Add(lblTerraceHeight);
+
+            numTerraceheight = new NumericUpDown
+            {
+                Location = new System.Drawing.Point(200, 50),
+                Size = new System.Drawing.Size(80, 25),
+                DecimalPlaces = 2,
+                Minimum = 2.8M,
+                Maximum = 5.0M,
+                Value = 3.0M,
+                Increment = 0.1M,
+                Enabled = false
+            };
+            grpTerrace.Controls.Add(numTerraceheight);
+
+            Label lblTerraceNote = new Label
+            {
+                Text = "(Terrace will be placed at top of building)",
+                Location = new System.Drawing.Point(290, 52),
+                Size = new System.Drawing.Size(250, 20),
+                Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Italic),
+                ForeColor = System.Drawing.Color.Gray
+            };
+            grpTerrace.Controls.Add(lblTerraceNote);
+
+            yPos += 100;
+
+
             // SEISMIC ZONE
             GroupBox grpSeismic = new GroupBox
             {
@@ -792,6 +849,10 @@ namespace ETABS_CAD_Automation
             numBasementHeight.Enabled = chkBasement.Checked;
         }
 
+        private void ChekTerrace_CheckedChanged(object sender, EventArgs e)
+        {
+            numTerraceheight.Enabled = chkTerrace.Checked;
+        }
         private void ChkPodium_CheckedChanged(object sender, EventArgs e)
         {
             numPodiumLevels.Enabled = chkPodium.Checked;
@@ -801,9 +862,9 @@ namespace ETABS_CAD_Automation
         private void BtnGenerateTabs_Click(object sender, EventArgs e)
         {
             // Remove old CAD import tabs (keep Building Config and Beam Depths)
-            while (tabControl.TabPages.Count > 2)
+            while (tabControl.TabPages.Count > 3)
             {
-                tabControl.TabPages.RemoveAt(2);
+                tabControl.TabPages.RemoveAt(3);
             }
 
             // Clear dictionaries
@@ -825,6 +886,10 @@ namespace ETABS_CAD_Automation
 
             CreateCADImportTab("EDeck", "E-Deck (Ground) Floor Plan");
             CreateCADImportTab("Typical", "Typical Floor Plan (Will be replicated)");
+            if(chkTerrace.Checked)
+            {
+                CreateCADImportTab("Terrace", "Terrace Floor Plan");
+            }
 
             MessageBox.Show(
                 "CAD Import tabs generated!\n\n" +
@@ -1126,6 +1191,24 @@ namespace ETABS_CAD_Automation
                 LayerMapping = GetLayerMapping("Typical")
             });
 
+
+            if(chkTerrace.Checked)
+            {
+                if (!ValidateFloorConfig("Terrace"))
+                {
+                    MessageBox.Show("Please configure Terrace floor CAD file and layer mappings.",
+                        "Validation Error");
+                    return;
+                }
+                FloorConfigs.Add(new FloorTypeConfig
+                {
+                    Name = "Terrace",
+                    Count = 1,
+                    Height = (double)numTerraceheight.Value,
+                    CADFilePath = cadPathTextBoxes["Terrace"].Text,
+                    LayerMapping = GetLayerMapping("Terrace")
+                });
+            }
             SeismicZone = cmbSeismicZone.SelectedItem?.ToString() ?? "Zone IV";
 
             // Show confirmation
