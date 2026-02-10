@@ -1,6 +1,6 @@
 ﻿
 // ============================================================================
-// FILE: Importers/WallImporterEnhanced.cs (CORRECTED - NO Z CONVERSION)
+// FILE: Importers/WallImporterEnhanced.cs (WITH GRADE SCHEDULE SUPPORT)
 // ============================================================================
 using ETABSv1;
 using netDxf;
@@ -19,28 +19,34 @@ namespace ETABS_CAD_Automation.Importers
         private double floorHeight;
         private int totalTypicalFloors;
         private string seismicZone;
+        private GradeScheduleManager gradeSchedule; // NEW: Grade schedule
 
         // CRITICAL FIX: Separate conversion factors for X and Y
         // Z elevations come from StoryManager and are ALREADY in meters - NO CONVERSION NEEDED
         private const double X_TO_M = 0.001;  // Convert DXF X coordinates to meters
         private const double Y_TO_M = 0.001;  // Convert DXF Y coordinates to meters
-        // REMOVED Z_TO_M - not needed since elevations are already in meters
 
         private double MX(double xValue) => xValue * X_TO_M;
         private double MY(double yValue) => yValue * Y_TO_M;
-        // REMOVED MZ() - elevations passed directly without conversion
 
         private int wallsCreated = 0;
         private int wallsFailed = 0;
         private Dictionary<string, int> wallTypeCount = new Dictionary<string, int>();
 
-        public WallImporterEnhanced(cSapModel model, DxfDocument doc, double height, int typicalFloors, string zone)
+        public WallImporterEnhanced(
+            cSapModel model,
+            DxfDocument doc,
+            double height,
+            int typicalFloors,
+            string zone,
+            GradeScheduleManager gradeManager = null)  // NEW: Optional grade manager
         {
             sapModel = model;
             dxfDoc = doc;
             floorHeight = height;
             totalTypicalFloors = typicalFloors;
             seismicZone = zone;
+            gradeSchedule = gradeManager;  // NEW
 
             // Diagnose coordinate system
             DiagnoseCoordinateSystem();
@@ -79,90 +85,9 @@ namespace ETABS_CAD_Automation.Importers
                     System.Diagnostics.Debug.WriteLine($"  X span: {rawLengthX * X_TO_M:F3}m");
                     System.Diagnostics.Debug.WriteLine($"  Y span: {rawLengthY * Y_TO_M:F3}m");
 
-                    // CREATE A TEST POINT IN ETABS AND READ IT BACK
-                    System.Diagnostics.Debug.WriteLine($"\n=== ETABS VERIFICATION TEST ===");
-
-                    string testPoint1 = "";
-
-                    double testX = MX(testLine.StartPoint.X);
-                    double testY = MY(testLine.StartPoint.Y);
-                    double testZ = 0;
-
-                    System.Diagnostics.Debug.WriteLine($"\nSending to ETABS:");
-                    System.Diagnostics.Debug.WriteLine($"  X={testX:F6}m, Y={testY:F6}m, Z={testZ:F6}m");
-
                     System.Diagnostics.Debug.WriteLine($"\nZ Coordinate Handling:");
                     System.Diagnostics.Debug.WriteLine($"  Z elevations come from StoryManager - already in meters");
                     System.Diagnostics.Debug.WriteLine($"  No conversion applied to Z values");
-                    System.Diagnostics.Debug.WriteLine($"  Sample elevation: 4.5m → 4.5m (no conversion)");
-
-                    // Create test point
-                    int ret1 = sapModel.PointObj.AddCartesian(testX, testY, testZ, ref testPoint1, "Global");
-
-                    if (ret1 == 0 && !string.IsNullOrEmpty(testPoint1))
-                    {
-                        // Read back coordinates
-                        double readX = 0, readY = 0, readZ = 0;
-                        int ret2 = sapModel.PointObj.GetCoordCartesian(testPoint1, ref readX, ref readY, ref readZ);
-
-                        if (ret2 == 0)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"\nETABS stored as:");
-                            System.Diagnostics.Debug.WriteLine($"  X={readX:F6}m, Y={readY:F6}m, Z={readZ:F6}m");
-
-                            // Check for discrepancies
-                            double xError = Math.Abs(readX - testX);
-                            double yError = Math.Abs(readY - testY);
-
-                            if (xError > 0.001)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"\n⚠️ X-AXIS MISMATCH DETECTED!");
-                                System.Diagnostics.Debug.WriteLine($"  Sent: {testX:F6}m");
-                                System.Diagnostics.Debug.WriteLine($"  Got:  {readX:F6}m");
-                                System.Diagnostics.Debug.WriteLine($"  Ratio: {readX / testX:F6}");
-
-                                if (testX != 0)
-                                {
-                                    double correctionFactor = testX / readX;
-                                    double newXToM = X_TO_M * correctionFactor;
-                                    System.Diagnostics.Debug.WriteLine($"  ** USE THIS VALUE: X_TO_M = {newXToM:F9} **");
-                                }
-                            }
-                            else
-                            {
-                                System.Diagnostics.Debug.WriteLine($"\n✓ X-axis is CORRECT!");
-                            }
-
-                            if (yError > 0.001)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"\n⚠️ Y-AXIS MISMATCH DETECTED!");
-                                System.Diagnostics.Debug.WriteLine($"  Sent: {testY:F6}m");
-                                System.Diagnostics.Debug.WriteLine($"  Got:  {readY:F6}m");
-                                System.Diagnostics.Debug.WriteLine($"  Ratio: {readY / testY:F6}");
-
-                                if (testY != 0)
-                                {
-                                    double correctionFactor = testY / readY;
-                                    double newYToM = Y_TO_M * correctionFactor;
-                                    System.Diagnostics.Debug.WriteLine($"  ** USE THIS VALUE: Y_TO_M = {newYToM:F9} **");
-                                }
-                            }
-                            else
-                            {
-                                System.Diagnostics.Debug.WriteLine($"✓ Y-axis is CORRECT!");
-                            }
-                        }
-                        else
-                        {
-                            System.Diagnostics.Debug.WriteLine($"⚠️ Failed to read back coordinates (ret={ret2})");
-                        }
-
-                        System.Diagnostics.Debug.WriteLine($"\n(Note: Test point '{testPoint1}' created - you can delete it manually if needed)");
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"⚠️ Failed to create test point (ret={ret1})");
-                    }
                 }
                 else
                 {
@@ -172,7 +97,6 @@ namespace ETABS_CAD_Automation.Importers
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Diagnostic error: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
             }
 
             System.Diagnostics.Debug.WriteLine("===================================================\n");
@@ -193,10 +117,19 @@ namespace ETABS_CAD_Automation.Importers
             var wallLayers = layerMapping.Where(x => x.Value == "Wall").Select(x => x.Key).ToList();
             if (wallLayers.Count == 0) return;
 
+            // NEW: Get wall grade for this story
+            string wallGrade = gradeSchedule?.GetWallGradeForStory(story);
+
             System.Diagnostics.Debug.WriteLine(
                 $"\n========== IMPORTING WALLS - Story {story} ==========");
             System.Diagnostics.Debug.WriteLine(
                 $"Building Config: {totalTypicalFloors} typical floors, {seismicZone}");
+
+            if (!string.IsNullOrEmpty(wallGrade))
+            {
+                System.Diagnostics.Debug.WriteLine($"Wall Concrete Grade: {wallGrade}");
+            }
+
             System.Diagnostics.Debug.WriteLine(
                 $"Base Elevation: {elevation:F3}m (already in meters - no conversion)");
             System.Diagnostics.Debug.WriteLine(
@@ -215,7 +148,7 @@ namespace ETABS_CAD_Automation.Importers
                         line.StartPoint.X, line.StartPoint.Y,
                         line.EndPoint.X, line.EndPoint.Y);
 
-                    if (CreateWallFromLineWithAutoThickness(line, elevation, story, wallType, wallLengthM))
+                    if (CreateWallFromLineWithAutoThickness(line, elevation, story, wallType, wallLengthM, wallGrade))
                         wallsCreated++;
                     else
                         wallsFailed++;
@@ -225,7 +158,7 @@ namespace ETABS_CAD_Automation.Importers
                 var polylines = dxfDoc.Entities.Polylines2D.Where(p => p.Layer.Name == layerName).ToList();
                 foreach (Polyline2D poly in polylines)
                 {
-                    int count = CreateWallFromPolylineWithAutoThickness(poly, elevation, story, wallType);
+                    int count = CreateWallFromPolylineWithAutoThickness(poly, elevation, story, wallType, wallGrade);
                     wallsCreated += count;
                 }
             }
@@ -246,7 +179,8 @@ namespace ETABS_CAD_Automation.Importers
             double elevation,
             int story,
             WallThicknessCalculator.WallType wallType,
-            double wallLengthM)
+            double wallLengthM,
+            string preferredGrade)  // NEW: Pass grade
         {
             try
             {
@@ -257,7 +191,9 @@ namespace ETABS_CAD_Automation.Importers
                     wallType,
                     seismicZone,
                     wallLengthM,
-                    false);
+                    false,
+                    WallThicknessCalculator.ConstructionType.TypeII,
+                    preferredGrade);  // NEW: Pass grade
 
                 string storyName = GetStoryName(story);
 
@@ -297,7 +233,8 @@ namespace ETABS_CAD_Automation.Importers
             Polyline2D poly,
             double elevation,
             int story,
-            WallThicknessCalculator.WallType wallType)
+            WallThicknessCalculator.WallType wallType,
+            string preferredGrade)  // NEW: Pass grade
         {
             try
             {
@@ -316,7 +253,7 @@ namespace ETABS_CAD_Automation.Importers
                     if (CreateWallSegmentWithAutoThickness(
                         MX(vertices[i].Position.X), MY(vertices[i].Position.Y),
                         MX(vertices[i + 1].Position.X), MY(vertices[i + 1].Position.Y),
-                        elevation, storyName, wallType, wallLengthM))
+                        elevation, storyName, wallType, wallLengthM, preferredGrade))
                     {
                         count++;
                     }
@@ -331,7 +268,7 @@ namespace ETABS_CAD_Automation.Importers
                     if (CreateWallSegmentWithAutoThickness(
                         MX(vertices[vertices.Count - 1].Position.X), MY(vertices[vertices.Count - 1].Position.Y),
                         MX(vertices[0].Position.X), MY(vertices[0].Position.Y),
-                        elevation, storyName, wallType, wallLengthM))
+                        elevation, storyName, wallType, wallLengthM, preferredGrade))
                     {
                         count++;
                     }
@@ -351,7 +288,8 @@ namespace ETABS_CAD_Automation.Importers
             double elevation,
             string storyName,
             WallThicknessCalculator.WallType wallType,
-            double wallLengthM)
+            double wallLengthM,
+            string preferredGrade)  // NEW: Pass grade
         {
             try
             {
@@ -362,7 +300,9 @@ namespace ETABS_CAD_Automation.Importers
                     wallType,
                     seismicZone,
                     wallLengthM,
-                    false);
+                    false,
+                    WallThicknessCalculator.ConstructionType.TypeII,
+                    preferredGrade);  // NEW: Pass grade
 
                 if (!wallTypeCount.ContainsKey(section))
                     wallTypeCount[section] = 0;
@@ -442,3 +382,4 @@ namespace ETABS_CAD_Automation.Importers
         }
     }
 }
+

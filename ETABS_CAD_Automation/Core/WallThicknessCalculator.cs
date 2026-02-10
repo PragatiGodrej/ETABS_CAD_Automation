@@ -450,8 +450,8 @@ namespace ETABS_CAD_Automation.Core
         public static string GetDesignNotes(int numTypicalFloors, string seismicZone)
         {
             string notes = "=== WALL THICKNESS DESIGN NOTES ===\n\n";
-            notes += $"Configuration: {numTypicalFloors} typical floors in {seismicZone}\n\n";
-            notes += "Wall Sections from Template:\n";
+            //notes += $"Configuration: {numTypicalFloors} typical floors in {seismicZone}\n\n";
+            //notes += "Wall Sections from Template:\n";
 
             var thicknesses = GetAvailableThicknesses();
             foreach (int thickness in thicknesses)

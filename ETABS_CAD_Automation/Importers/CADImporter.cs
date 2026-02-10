@@ -29,13 +29,17 @@ namespace ETABS_CAD_Automation.Importers
             storyManager = new StoryManager(model);
         }
 
+       
+
         public bool ImportMultiFloorTypeCAD(
-            List<FloorTypeConfig> floorConfigs,
-            List<double> storyHeights,
-            List<string> storyNames,
-            string seismicZone,
-            Dictionary<string, int> beamDepths,
-            Dictionary<string, int> slabThicknesses)
+    List<FloorTypeConfig> floorConfigs,
+    List<double> storyHeights,
+    List<string> storyNames,
+    string seismicZone,
+    Dictionary<string, int> beamDepths,
+    Dictionary<string, int> slabThicknesses,
+    List<string> wallGrades,        // ⭐ NEW
+    List<int> floorsPerGrade)       // ⭐ NEW
         {
             try
             {
@@ -44,12 +48,6 @@ namespace ETABS_CAD_Automation.Importers
                 // ═══════════════════════════════════════════════════════════════
                 // ⭐ CRITICAL FIX: SET UNIT CONTEXT FIRST - BEFORE ANY OPERATIONS
                 // ═══════════════════════════════════════════════════════════════
-                // This prevents unit context leakage from CAD import affecting
-                // story height interpretation. All numeric values will now be
-                // interpreted as meters by ETABS.
-                // ═══════════════════════════════════════════════════════════════
-
-                // Get current units
                 eUnits previousUnits = sapModel.GetPresentUnits();
 
                 System.Diagnostics.Debug.WriteLine("\n╔════════════════════════════════════════════════════════╗");
@@ -57,12 +55,9 @@ namespace ETABS_CAD_Automation.Importers
                 System.Diagnostics.Debug.WriteLine("╚════════════════════════════════════════════════════════╝");
                 System.Diagnostics.Debug.WriteLine($"Previous ETABS units: {previousUnits}");
                 System.Diagnostics.Debug.WriteLine("Setting units to: N_m_C (Newton, meter, Celsius)");
-                System.Diagnostics.Debug.WriteLine("Reason: Prevent unit context leakage from CAD import");
 
-                // Set to meters BEFORE any operations
                 sapModel.SetPresentUnits(eUnits.N_m_C);
 
-                // Verify the change took effect
                 eUnits currentUnits = sapModel.GetPresentUnits();
                 System.Diagnostics.Debug.WriteLine($"Confirmed ETABS units: {currentUnits}");
 
@@ -82,11 +77,36 @@ namespace ETABS_CAD_Automation.Importers
                 }
                 System.Diagnostics.Debug.WriteLine("════════════════════════════════════════════════════════\n");
 
+                // ═══════════════════════════════════════════════════════════════
+                // ⭐ NEW: CREATE GRADE SCHEDULE MANAGER
+                // ═══════════════════════════════════════════════════════════════
+                GradeScheduleManager gradeSchedule = new GradeScheduleManager(
+                    wallGrades,
+                    floorsPerGrade);
+
+                // Validate grade schedule matches total floors
+                int totalStories = storyHeights.Count;
+                if (!gradeSchedule.ValidateTotalFloors(totalStories))
+                {
+                    MessageBox.Show(
+                        $"Grade schedule floor count doesn't match total stories!\n\n" +
+                        $"Expected: {totalStories}\n" +
+                        $"Got: {floorsPerGrade.Sum()}\n\n" +
+                        $"Please check your grade configuration.",
+                        "Configuration Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return false;
+                }
+
+                // Display grade schedule summary
+                System.Diagnostics.Debug.WriteLine("\n" + gradeSchedule.GetScheduleSummary());
+
                 // Calculate total typical floors for wall thickness calculation
                 int totalTypicalFloors = CalculateTotalTypicalFloors(floorConfigs);
 
-                // Show design notes
-                ShowDesignNotes(totalTypicalFloors, seismicZone, beamDepths, slabThicknesses);
+                // Show design notes (with grade schedule)
+                ShowDesignNotes(totalTypicalFloors, seismicZone, beamDepths, slabThicknesses, gradeSchedule);
 
                 // STEP 1: Define materials (now in meter context)
                 System.Diagnostics.Debug.WriteLine("Step 1: Defining materials (in meter context)...");
@@ -101,9 +121,6 @@ namespace ETABS_CAD_Automation.Importers
                 WallThicknessCalculator.LoadAvailableWallSections(sapModel);
 
                 // STEP 4: Import each floor type
-                // CAD coordinates will be converted to meters via X_TO_M, Y_TO_M
-                // Story elevations are already in meters
-                // ETABS will interpret everything consistently as meters
                 System.Diagnostics.Debug.WriteLine("Step 4: Importing floor types...\n");
 
                 int currentStoryIndex = 0;
@@ -128,28 +145,29 @@ namespace ETABS_CAD_Automation.Importers
                         return false;
                     }
 
-                    // Create enhanced importers
-                    // Note: X_TO_M and Y_TO_M convert DXF units → meters
-                    // Elevations from StoryManager are already in meters
-                    // ETABS interprets everything as meters (we set context above)
+                    // ⭐ CORRECTED: Pass gradeSchedule to ALL importers
                     BeamImporterEnhanced beamImporter = new BeamImporterEnhanced(
                         sapModel,
                         dxfDoc,
                         seismicZone,
                         totalTypicalFloors,
-                        beamDepths);
+                        beamDepths,
+                        gradeSchedule);  // ✅ NOW PASSED!
 
                     WallImporterEnhanced wallImporter = new WallImporterEnhanced(
                         sapModel,
                         dxfDoc,
                         floorConfig.Height,
                         totalTypicalFloors,
-                        seismicZone);
+                        seismicZone,
+                        gradeSchedule);// ✅ NOW PASSED!
+                       
 
                     SlabImporterEnhanced slabImporter = new SlabImporterEnhanced(
                         sapModel,
                         dxfDoc,
-                        slabThicknesses);
+                        slabThicknesses,
+                        gradeSchedule);  // ✅ NOW PASSED!
 
                     // Import this floor type for all its instances
                     for (int floor = 0; floor < floorConfig.Count; floor++)
@@ -158,29 +176,35 @@ namespace ETABS_CAD_Automation.Importers
                         double baseElevation = storyManager.GetStoryBaseElevation(currentStoryIndex);
                         double topElevation = storyManager.GetStoryTopElevation(currentStoryIndex);
 
+                        // Get concrete grades for this story
+                        string wallGrade = gradeSchedule.GetWallGradeForStory(currentStoryIndex);
+                        string beamSlabGrade = gradeSchedule.GetBeamSlabGradeForStory(currentStoryIndex);
+
                         System.Diagnostics.Debug.WriteLine(
                             $"\n>>> Importing {storyNames[currentStoryIndex]} | " +
                             $"Base: {baseElevation:F3}m | Top: {topElevation:F3}m | " +
                             $"Height: {floorConfig.Height:F3}m");
+                        System.Diagnostics.Debug.WriteLine(
+                            $"    Concrete Grades: Wall={wallGrade}, Beam/Slab={beamSlabGrade}");
                         System.Diagnostics.Debug.WriteLine(
                             $"    Unit Context: METERS (all values interpreted as meters by ETABS)");
 
                         // Import walls at BASE of story (elevation in meters)
                         wallImporter.ImportWalls(
                             floorConfig.LayerMapping,
-                            baseElevation,  // ← In meters, ETABS interprets as meters
+                            baseElevation,
                             currentStoryIndex);
 
                         // Import beams and slabs at TOP of story (elevation in meters)
                         beamImporter.ImportBeams(
                             floorConfig.LayerMapping,
-                            topElevation,  // ← In meters, ETABS interprets as meters
-                            currentStoryIndex + 1);
+                            topElevation,
+                            currentStoryIndex);
 
                         slabImporter.ImportSlabs(
                             floorConfig.LayerMapping,
-                            topElevation,  // ← In meters, ETABS interprets as meters
-                            currentStoryIndex + 1);
+                            topElevation,
+                            currentStoryIndex);
 
                         currentStoryIndex++;
                     }
@@ -209,6 +233,7 @@ namespace ETABS_CAD_Automation.Importers
                     BuildImportSummary(floorConfigs, storyHeights.Count,
                         storyManager.GetTotalBuildingHeight(),
                         totalTypicalFloors, seismicZone, beamDepths, slabThicknesses) + "\n\n" +
+                    gradeSchedule.GetScheduleSummary() + "\n" +
                     $"Unit System: N_m_C (meters)\n" +
                     $"All dimensions are in meters.",
                     "Import Success");
@@ -240,10 +265,50 @@ namespace ETABS_CAD_Automation.Importers
             return total;
         }
 
-        private void ShowDesignNotes(int totalTypicalFloors, string seismicZone,
-            Dictionary<string, int> beamDepths, Dictionary<string, int> slabThicknesses)
+        //private void ShowDesignNotes(int totalTypicalFloors, string seismicZone,
+        //    Dictionary<string, int> beamDepths, Dictionary<string, int> slabThicknesses)
+        //{
+        //    string notes = WallThicknessCalculator.GetDesignNotes(totalTypicalFloors, seismicZone);
+
+        //    notes += "\n\nWall Thickness Preview:\n";
+        //    notes += GenerateThicknessTable(totalTypicalFloors, seismicZone);
+
+        //    notes += "\n\nBeam Configuration:\n";
+        //    notes += GenerateBeamConfigTable(seismicZone, beamDepths, totalTypicalFloors);
+
+        //    notes += "\n\nSlab Configuration:\n";
+        //    notes += GenerateSlabConfigTable(slabThicknesses);
+
+        //    notes += "\n\n⚠️ UNIT SYSTEM:\n";
+        //    notes += "ETABS will be set to N_m_C (meters)\n";
+        //    notes += "All dimensions (X, Y, Z) will be in meters\n";
+        //    notes += "Story heights: As configured in UI (meters)\n";
+        //    notes += "CAD coordinates: Converted to meters via X_TO_M, Y_TO_M";
+
+        //    var result = MessageBox.Show(
+        //        notes + "\n\nProceed with these design parameters?",
+        //        "Design Standards - TDD/PKO Guidelines",
+        //        MessageBoxButtons.YesNo,
+        //        MessageBoxIcon.Information);
+
+        //    if (result != DialogResult.Yes)
+        //    {
+        //        throw new Exception("Import cancelled by user");
+        //    }
+        //}
+        private void ShowDesignNotes(
+    int totalTypicalFloors,
+    string seismicZone,
+    Dictionary<string, int> beamDepths,
+    Dictionary<string, int> slabThicknesses,
+    GradeScheduleManager gradeSchedule)  // ⭐ ADD PARAMETER
         {
             string notes = WallThicknessCalculator.GetDesignNotes(totalTypicalFloors, seismicZone);
+
+            // ⭐ ADD GRADE SCHEDULE TO NOTES
+            notes += "\n\n═══════════════════════════════════════";
+            notes += "\n" + gradeSchedule.GetScheduleSummary();
+            notes += "═══════════════════════════════════════";
 
             notes += "\n\nWall Thickness Preview:\n";
             notes += GenerateThicknessTable(totalTypicalFloors, seismicZone);
@@ -271,7 +336,6 @@ namespace ETABS_CAD_Automation.Importers
                 throw new Exception("Import cancelled by user");
             }
         }
-
         private string GenerateSlabConfigTable(Dictionary<string, int> slabThicknesses)
         {
             StringBuilder sb = new StringBuilder();

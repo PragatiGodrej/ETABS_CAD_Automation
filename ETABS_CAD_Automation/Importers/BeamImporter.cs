@@ -1,6 +1,6 @@
 ﻿
 // ============================================================================
-// FILE: Importers/BeamImporterEnhanced.cs (CORRECTED - NO Z CONVERSION)
+// FILE: Importers/BeamImporterEnhanced.cs (WITH GRADE SCHEDULE SUPPORT)
 // ============================================================================
 using ETABS_CAD_Automation.Core;
 using ETABSv1;
@@ -9,18 +9,13 @@ using netDxf.Entities;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Text.RegularExpressions;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.ToolTip;
 
 namespace ETABS_CAD_Automation.Importers
 {
     /// <summary>
-    /// Enhanced beam importer that:
-    /// 1. Reads beam sections from ETABS template (e.g., B20X75M35)
-    /// 2. Uses user-defined depths from UI
-    /// 3. Automatically determines widths based on beam type and seismic zone
-    /// 4. Matches adjacent wall thickness for main beams
+    /// Enhanced beam importer with grade schedule support
+    /// Beam grades are 0.7x wall grade (rounded to nearest 5)
     /// </summary>
     public class BeamImporterEnhanced
     {
@@ -29,16 +24,15 @@ namespace ETABS_CAD_Automation.Importers
         private readonly string seismicZone;
         private readonly int totalTypicalFloors;
         private readonly Dictionary<string, int> beamDepths;
+        private readonly GradeScheduleManager gradeSchedule;  // NEW: Grade schedule
 
         // Convert DXF coordinates to meters
         // Z elevations come from StoryManager and are ALREADY in meters - NO CONVERSION NEEDED
         private const double X_TO_M = 0.001;
         private const double Y_TO_M = 0.001;
-        // REMOVED Z_TO_M - not needed since elevations are already in meters
 
         private double MX(double xValue) => xValue * X_TO_M;
         private double MY(double yValue) => yValue * Y_TO_M;
-        // REMOVED MZ() - elevations passed directly without conversion
 
         // Store available beam sections from template
         private static Dictionary<string, BeamSectionInfo> availableBeamSections =
@@ -57,13 +51,15 @@ namespace ETABS_CAD_Automation.Importers
             DxfDocument doc,
             string zone,
             int typicalFloors,
-            Dictionary<string, int> depths)
+            Dictionary<string, int> depths,
+            GradeScheduleManager gradeManager = null)  // NEW: Optional grade manager
         {
             sapModel = model;
             dxfDoc = doc;
             seismicZone = zone;
             totalTypicalFloors = typicalFloors;
             beamDepths = depths;
+            gradeSchedule = gradeManager;  // NEW
 
             // Load available beam sections from template
             LoadAvailableBeamSections();
@@ -180,6 +176,45 @@ namespace ETABS_CAD_Automation.Importers
             string bestMatch = null;
             int minDifference = int.MaxValue;
 
+            // ⭐ CRITICAL FIX: Remove "M" prefix from preferredGrade for comparison
+            // GradeScheduleManager returns "M30", but section.Grade is stored as "30"
+            string gradeToMatch = preferredGrade?.Replace("M", "").Replace("m", "").Trim();
+
+            // First try to find match with preferred grade
+            if (!string.IsNullOrEmpty(gradeToMatch))
+            {
+                foreach (var kvp in availableBeamSections)
+                {
+                    var section = kvp.Value;
+
+                    // Only consider sections with the preferred grade
+                    if (section.Grade == gradeToMatch)
+                    {
+                        // Calculate difference (prioritize depth match over width)
+                        int depthDiff = Math.Abs(section.DepthMm - requiredDepth);
+                        int widthDiff = Math.Abs(section.WidthMm - requiredWidth);
+                        int totalDiff = (depthDiff * 2) + widthDiff; // Depth is more important
+
+                        if (totalDiff < minDifference)
+                        {
+                            minDifference = totalDiff;
+                            bestMatch = kvp.Key;
+                        }
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    var matchedSection = availableBeamSections[bestMatch];
+                    System.Diagnostics.Debug.WriteLine(
+                        $"  Required: {requiredWidth}x{requiredDepth}mm M{gradeToMatch} → Using: {bestMatch} " +
+                        $"({matchedSection.WidthMm}x{matchedSection.DepthMm}mm M{matchedSection.Grade})");
+                    return bestMatch;
+                }
+            }
+
+            // Fallback: Find closest match without grade preference
+            minDifference = int.MaxValue;
             foreach (var kvp in availableBeamSections)
             {
                 var section = kvp.Value;
@@ -189,30 +224,11 @@ namespace ETABS_CAD_Automation.Importers
                 int widthDiff = Math.Abs(section.WidthMm - requiredWidth);
                 int totalDiff = (depthDiff * 2) + widthDiff; // Depth is more important
 
-                // Check if this is a better match
                 if (totalDiff < minDifference)
                 {
-                    // If preferred grade specified, try to match it
-                    if (!string.IsNullOrEmpty(preferredGrade))
-                    {
-                        if (section.Grade == preferredGrade)
-                        {
-                            minDifference = totalDiff;
-                            bestMatch = kvp.Key;
-                        }
-                    }
-                    else
-                    {
-                        minDifference = totalDiff;
-                        bestMatch = kvp.Key;
-                    }
+                    minDifference = totalDiff;
+                    bestMatch = kvp.Key;
                 }
-            }
-
-            // If no match with preferred grade, try without grade preference
-            if (bestMatch == null && !string.IsNullOrEmpty(preferredGrade))
-            {
-                return GetClosestBeamSection(requiredWidth, requiredDepth, null);
             }
 
             if (bestMatch == null)
@@ -230,10 +246,10 @@ namespace ETABS_CAD_Automation.Importers
                     $"Available widths: {string.Join(", ", availableBeamSections.Select(s => s.Value.WidthMm).Distinct().OrderBy(w => w))}mm");
             }
 
-            var matchedSection = availableBeamSections[bestMatch];
+            var matchedSection2 = availableBeamSections[bestMatch];
             System.Diagnostics.Debug.WriteLine(
                 $"  Required: {requiredWidth}x{requiredDepth}mm → Using: {bestMatch} " +
-                $"({matchedSection.WidthMm}x{matchedSection.DepthMm}mm M{matchedSection.Grade})");
+                $"({matchedSection2.WidthMm}x{matchedSection2.DepthMm}mm M{matchedSection2.Grade})");
 
             return bestMatch;
         }
@@ -241,7 +257,7 @@ namespace ETABS_CAD_Automation.Importers
         /// <summary>
         /// Determine beam section based on layer name and beam configuration
         /// </summary>
-        private string DetermineBeamSection(string layerName)
+        private string DetermineBeamSection(string layerName, string preferredGrade)
         {
             string upper = layerName.ToUpperInvariant();
 
@@ -251,13 +267,13 @@ namespace ETABS_CAD_Automation.Importers
             // B-Internal gravity beams
             if (upper.Contains("INTERNAL") && upper.Contains("GRAVITY"))
             {
-                return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"]);
+                return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"], preferredGrade);
             }
 
             // B-Cantilever Gravity Beams
             if (upper.Contains("CANTILEVER") && upper.Contains("GRAVITY"))
             {
-                return GetClosestBeamSection(gravityWidth, beamDepths["CantileverGravity"]);
+                return GetClosestBeamSection(gravityWidth, beamDepths["CantileverGravity"], preferredGrade);
             }
 
             // MAIN BEAMS (Width based on adjacent wall thickness)
@@ -266,40 +282,40 @@ namespace ETABS_CAD_Automation.Importers
             if (upper.Contains("CORE") && upper.Contains("MAIN"))
             {
                 int coreWallWidth = GetMainBeamWidth(WallThicknessCalculator.WallType.CoreWall);
-                return GetClosestBeamSection(coreWallWidth, beamDepths["CoreMain"]);
+                return GetClosestBeamSection(coreWallWidth, beamDepths["CoreMain"], preferredGrade);
             }
 
             // B-Peripheral dead Main Beams
             if (upper.Contains("PERIPHERAL") && upper.Contains("DEAD") && upper.Contains("MAIN"))
             {
                 int peripheralDeadWidth = GetMainBeamWidth(WallThicknessCalculator.WallType.PeripheralDeadWall);
-                return GetClosestBeamSection(peripheralDeadWidth, beamDepths["PeripheralDeadMain"]);
+                return GetClosestBeamSection(peripheralDeadWidth, beamDepths["PeripheralDeadMain"], preferredGrade);
             }
 
             // B-Peripheral Portal Main Beams
             if (upper.Contains("PERIPHERAL") && upper.Contains("PORTAL") && upper.Contains("MAIN"))
             {
                 int peripheralPortalWidth = GetMainBeamWidth(WallThicknessCalculator.WallType.PeripheralPortalWall);
-                return GetClosestBeamSection(peripheralPortalWidth, beamDepths["PeripheralPortalMain"]);
+                return GetClosestBeamSection(peripheralPortalWidth, beamDepths["PeripheralPortalMain"], preferredGrade);
             }
 
             // B-Internal Main beams
             if (upper.Contains("INTERNAL") && upper.Contains("MAIN"))
             {
                 int internalWallWidth = GetMainBeamWidth(WallThicknessCalculator.WallType.InternalWall);
-                return GetClosestBeamSection(internalWallWidth, beamDepths["InternalMain"]);
+                return GetClosestBeamSection(internalWallWidth, beamDepths["InternalMain"], preferredGrade);
             }
 
             // Generic beam detection (fallback)
             if (upper.Contains("BEAM") || upper.StartsWith("B-"))
             {
                 System.Diagnostics.Debug.WriteLine($"⚠️ Generic beam layer '{layerName}', using default gravity beam");
-                return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"]);
+                return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"], preferredGrade);
             }
 
             // Default fallback - use gravity beam
             System.Diagnostics.Debug.WriteLine($"⚠️ Unknown beam layer '{layerName}', using default gravity beam");
-            return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"]);
+            return GetClosestBeamSection(gravityWidth, beamDepths["InternalGravity"], preferredGrade);
         }
 
         public void ImportBeams(Dictionary<string, string> layerMapping, double elevation, int story)
@@ -311,16 +327,25 @@ namespace ETABS_CAD_Automation.Importers
 
             if (beamLayers.Count == 0) return;
 
+            // NEW: Get beam grade for this story (0.7x wall grade)
+            string beamGrade = gradeSchedule?.GetBeamSlabGradeForStory(story);
+
             System.Diagnostics.Debug.WriteLine($"\n========== IMPORTING BEAMS - Story {story} ==========");
             System.Diagnostics.Debug.WriteLine($"Seismic Zone: {seismicZone}");
             System.Diagnostics.Debug.WriteLine($"Gravity Beam Width: {GetGravityBeamWidth()}mm");
+
+            if (!string.IsNullOrEmpty(beamGrade))
+            {
+                System.Diagnostics.Debug.WriteLine($"Beam Concrete Grade: {beamGrade}");
+            }
+
             System.Diagnostics.Debug.WriteLine($"Beam Elevation: {elevation:F3}m (already in meters - no conversion)");
 
             int totalBeamsCreated = 0;
 
             foreach (string layerName in beamLayers)
             {
-                string section = DetermineBeamSection(layerName);
+                string section = DetermineBeamSection(layerName, beamGrade);
                 int beamCount = 0;
 
                 System.Diagnostics.Debug.WriteLine($"\nLayer: {layerName}");

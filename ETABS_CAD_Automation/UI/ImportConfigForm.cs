@@ -1,9 +1,10 @@
 ﻿
 // ============================================================================
-// FILE: UI/ImportConfigForm.cs (UPDATED)
+// FILE: UI/ImportConfigForm.cs (COMPLETE WITH GRADE SCHEDULE)
 // ============================================================================
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows.Forms;
 using ETABS_CAD_Automation.Importers;
 using ETABS_CAD_Automation.Models;
@@ -15,8 +16,11 @@ namespace ETABS_CAD_Automation
         public List<FloorTypeConfig> FloorConfigs { get; private set; }
         public string SeismicZone { get; private set; }
         public Dictionary<string, int> BeamDepths { get; private set; }
+        public Dictionary<string, int> SlabThicknesses { get; private set; }
 
-        public Dictionary<string, int> SlabThicknesses{ get; private set; }
+        // Grade schedule data
+        public List<string> WallGrades { get; private set; }
+        public List<int> FloorsPerGrade { get; private set; }
 
         // UI Controls
         private TabControl tabControl;
@@ -35,6 +39,13 @@ namespace ETABS_CAD_Automation
         private NumericUpDown numTerraceheight;
         private ComboBox cmbSeismicZone;
 
+        // Concrete grade schedule controls
+        private DataGridView dgvGradeSchedule;
+        private NumericUpDown numTotalFloors;
+        private Button btnAddGradeRow;
+        private Button btnRemoveGradeRow;
+        private Label lblGradeTotal;
+
         // Beam depth controls
         private NumericUpDown numInternalGravityDepth;
         private NumericUpDown numCantileverGravityDepth;
@@ -51,8 +62,7 @@ namespace ETABS_CAD_Automation
         private Dictionary<string, ListBox> mappedLayerListBoxes;
         private Dictionary<string, ComboBox> elementTypeComboBoxes;
 
-
-        //slab thickness controls
+        // Slab thickness controls
         private NumericUpDown numLobbySlabThickness;
         private NumericUpDown numStairSlabThickness;
 
@@ -62,6 +72,8 @@ namespace ETABS_CAD_Automation
             FloorConfigs = new List<FloorTypeConfig>();
             BeamDepths = new Dictionary<string, int>();
             SlabThicknesses = new Dictionary<string, int>();
+            WallGrades = new List<string>();
+            FloorsPerGrade = new List<int>();
             cadPathTextBoxes = new Dictionary<string, TextBox>();
             availableLayerListBoxes = new Dictionary<string, ListBox>();
             mappedLayerListBoxes = new Dictionary<string, ListBox>();
@@ -92,10 +104,15 @@ namespace ETABS_CAD_Automation
             tabControl.TabPages.Add(tabBeamDepth);
             InitializeBeamDepthTab(tabBeamDepth);
 
-            //Tab 3 slab Thickness
-            TabPage tabSlabConfig= new TabPage("Slab Thicknesses");
+            // Tab 3: Slab Thickness
+            TabPage tabSlabConfig = new TabPage("Slab Thicknesses");
             tabControl.TabPages.Add(tabSlabConfig);
             InitializeSlabConfigTab(tabSlabConfig);
+
+            // Tab 4: Concrete Grade Schedule
+            TabPage tabGradeSchedule = new TabPage("Concrete Grades");
+            tabControl.TabPages.Add(tabGradeSchedule);
+            InitializeGradeScheduleTab(tabGradeSchedule);
 
             // Action Buttons
             btnImport = new Button
@@ -119,7 +136,381 @@ namespace ETABS_CAD_Automation
             this.CancelButton = btnCancel;
         }
 
-        // slab thickness
+        // ====================================================================
+        // GRADE SCHEDULE TAB
+        // ====================================================================
+        private void InitializeGradeScheduleTab(TabPage tab)
+        {
+            tab.AutoScroll = true;
+            int yPos = 20;
+
+            // Instructions
+            Label lblInstructions = new Label
+            {
+                Text = "🏗️ CONCRETE GRADE SCHEDULE - Define wall grades from bottom to top",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(800, 25),
+                Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold),
+                ForeColor = System.Drawing.Color.DarkBlue
+            };
+            tab.Controls.Add(lblInstructions);
+            yPos += 35;
+
+            // Important Note
+            Label lblNote = new Label
+            {
+                Text = "⚠️ Total floors in grade schedule MUST equal total building floors\n" +
+                       "Beam/Slab grades are auto-calculated as 0.7× wall grade (rounded to nearest 5)",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(800, 35),
+                Font = new System.Drawing.Font("Segoe UI", 8.5F, System.Drawing.FontStyle.Italic),
+                ForeColor = System.Drawing.Color.DarkRed
+            };
+            tab.Controls.Add(lblNote);
+            yPos += 50;
+
+            // Total floors display
+            Label lblTotalFloorsLabel = new Label
+            {
+                Text = "Total Building Floors:",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(150, 25),
+                Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold)
+            };
+            tab.Controls.Add(lblTotalFloorsLabel);
+
+            numTotalFloors = new NumericUpDown
+            {
+                Location = new System.Drawing.Point(180, yPos),
+                Size = new System.Drawing.Size(80, 25),
+                ReadOnly = true,
+                Enabled = false,
+                Value = 0,
+                Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold)
+            };
+            tab.Controls.Add(numTotalFloors);
+
+            Label lblAutoCalculated = new Label
+            {
+                Text = "(Auto-calculated from Building Configuration tab)",
+                Location = new System.Drawing.Point(270, yPos + 2),
+                Size = new System.Drawing.Size(400, 20),
+                Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Italic),
+                ForeColor = System.Drawing.Color.Gray
+            };
+            tab.Controls.Add(lblAutoCalculated);
+            yPos += 40;
+
+            // DataGridView for grade schedule
+            dgvGradeSchedule = new DataGridView
+            {
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(820, 300),
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            };
+
+            // Define columns
+            dgvGradeSchedule.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Index",
+                HeaderText = "Row",
+                ReadOnly = true,
+                Width = 60
+            });
+
+            // Wall Grade with dropdown
+            var wallGradeColumn = new DataGridViewComboBoxColumn
+            {
+                Name = "WallGrade",
+                HeaderText = "Wall Concrete Grade from bottom",
+                DataSource = new List<string> { "M20", "M25", "M30", "M35", "M40", "M45", "M50", "M55", "M60" },
+                Width = 200
+            };
+            dgvGradeSchedule.Columns.Add(wallGradeColumn);
+
+            dgvGradeSchedule.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "FloorsCount",
+                HeaderText = "No. of floors Concrete Grade from bottom",
+                Width = 250
+            });
+
+            dgvGradeSchedule.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "BeamSlabGrade",
+                HeaderText = "Beam/Slab Grade (Auto)",
+                ReadOnly = true,
+                Width = 150
+            });
+
+            dgvGradeSchedule.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "FloorRange",
+                HeaderText = "Floor Range",
+                ReadOnly = true,
+                Width = 150
+            });
+
+            // Event handlers
+            dgvGradeSchedule.CellValueChanged += DgvGradeSchedule_CellValueChanged;
+            dgvGradeSchedule.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (dgvGradeSchedule.IsCurrentCellDirty)
+                {
+                    dgvGradeSchedule.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+
+            tab.Controls.Add(dgvGradeSchedule);
+            yPos += 310;
+
+            // Buttons
+            btnAddGradeRow = new Button
+            {
+                Text = "➕ Add Grade Row",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(150, 35),
+                Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold)
+            };
+            btnAddGradeRow.Click += BtnAddGradeRow_Click;
+            tab.Controls.Add(btnAddGradeRow);
+
+            btnRemoveGradeRow = new Button
+            {
+                Text = "➖ Remove Selected Row",
+                Location = new System.Drawing.Point(180, yPos),
+                Size = new System.Drawing.Size(170, 35),
+                Font = new System.Drawing.Font("Segoe UI", 9F)
+            };
+            btnRemoveGradeRow.Click += BtnRemoveGradeRow_Click;
+            tab.Controls.Add(btnRemoveGradeRow);
+
+            // Total validation label
+            lblGradeTotal = new Label
+            {
+                Text = "Total floors in schedule: 0 / 0",
+                Location = new System.Drawing.Point(370, yPos + 8),
+                Size = new System.Drawing.Size(400, 25),
+                Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold),
+                ForeColor = System.Drawing.Color.DarkRed
+            };
+            tab.Controls.Add(lblGradeTotal);
+            yPos += 50;
+
+            // Example
+            GroupBox grpExample = new GroupBox
+            {
+                Text = "Example Configuration",
+                Location = new System.Drawing.Point(20, yPos),
+                Size = new System.Drawing.Size(820, 120)
+            };
+            tab.Controls.Add(grpExample);
+
+            Label lblExample = new Label
+            {
+                Text =
+                    "For a 39-story building:\n\n" +
+                    "Row 0: M50 → 11 floors → Beam/Slab: M35 → Floors 1-11\n" +
+                    "Row 1: M45 → 10 floors → Beam/Slab: M30 → Floors 12-21\n" +
+                    "Row 2: M40 → 10 floors → Beam/Slab: M30 → Floors 22-31\n" +
+                    "Row 3: M30 →  8 floors → Beam/Slab: M20 → Floors 32-39\n\n" +
+                    "✓ Total: 11 + 10 + 10 + 8 = 39 floors (matches building)",
+                Location = new System.Drawing.Point(20, 25),
+                Size = new System.Drawing.Size(780, 85),
+                Font = new System.Drawing.Font("Consolas", 8.5F)
+            };
+            grpExample.Controls.Add(lblExample);
+
+            // Add default rows
+            AddDefaultGradeRow();
+        }
+
+        private void BtnAddGradeRow_Click(object sender, EventArgs e)
+        {
+            int rowIndex = dgvGradeSchedule.Rows.Add();
+            var row = dgvGradeSchedule.Rows[rowIndex];
+
+            row.Cells["Index"].Value = rowIndex;
+            row.Cells["WallGrade"].Value = "M40";
+            row.Cells["FloorsCount"].Value = "1";
+            row.Cells["BeamSlabGrade"].Value = "M30";
+            row.Cells["FloorRange"].Value = "";
+
+            UpdateGradeTotals();
+        }
+
+        private void BtnRemoveGradeRow_Click(object sender, EventArgs e)
+        {
+            if (dgvGradeSchedule.SelectedRows.Count > 0)
+            {
+                dgvGradeSchedule.Rows.RemoveAt(dgvGradeSchedule.SelectedRows[0].Index);
+                ReindexRows();
+                UpdateGradeTotals();
+            }
+        }
+
+        private void DgvGradeSchedule_CellValueChanged(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0) return;
+
+            var row = dgvGradeSchedule.Rows[e.RowIndex];
+
+            // Auto-calculate beam/slab grade when wall grade changes
+            if (e.ColumnIndex == dgvGradeSchedule.Columns["WallGrade"].Index)
+            {
+                string wallGrade = row.Cells["WallGrade"].Value?.ToString();
+                if (!string.IsNullOrEmpty(wallGrade))
+                {
+                    row.Cells["BeamSlabGrade"].Value = CalculateBeamSlabGrade(wallGrade);
+                }
+            }
+
+            // Update totals when floor count changes
+            if (e.ColumnIndex == dgvGradeSchedule.Columns["FloorsCount"].Index)
+            {
+                UpdateGradeTotals();
+            }
+        }
+
+        private string CalculateBeamSlabGrade(string wallGrade)
+        {
+            try
+            {
+                // Extract numeric value (e.g., "M50" → 50)
+                int wallValue = int.Parse(wallGrade.Replace("M", "").Replace("m", "").Trim());
+
+                // Calculate 0.7x and round to nearest 5
+                int beamSlabValue = (int)(Math.Round((wallValue * 0.7) / 5.0) * 5);
+
+                // Minimum M20
+                if (beamSlabValue < 20)
+                    beamSlabValue = 20;
+
+                return $"M{beamSlabValue}";
+            }
+            catch
+            {
+                return "M30";
+            }
+        }
+
+        private void ReindexRows()
+        {
+            for (int i = 0; i < dgvGradeSchedule.Rows.Count; i++)
+            {
+                dgvGradeSchedule.Rows[i].Cells["Index"].Value = i;
+            }
+            UpdateFloorRanges();
+        }
+
+        private void UpdateFloorRanges()
+        {
+            int currentFloor = 1;
+
+            for (int i = 0; i < dgvGradeSchedule.Rows.Count; i++)
+            {
+                var row = dgvGradeSchedule.Rows[i];
+                string floorsStr = row.Cells["FloorsCount"].Value?.ToString();
+
+                if (int.TryParse(floorsStr, out int floorCount) && floorCount > 0)
+                {
+                    int endFloor = currentFloor + floorCount - 1;
+                    row.Cells["FloorRange"].Value = $"{currentFloor}-{endFloor}";
+                    currentFloor = endFloor + 1;
+                }
+                else
+                {
+                    row.Cells["FloorRange"].Value = "";
+                }
+            }
+        }
+
+        private void UpdateGradeTotals()
+        {
+            int totalInSchedule = 0;
+
+            foreach (DataGridViewRow row in dgvGradeSchedule.Rows)
+            {
+                string floorsStr = row.Cells["FloorsCount"].Value?.ToString();
+                if (int.TryParse(floorsStr, out int floors))
+                {
+                    totalInSchedule += floors;
+                }
+            }
+
+            int requiredTotal = (int)numTotalFloors.Value;
+            bool isValid = totalInSchedule == requiredTotal;
+
+            lblGradeTotal.Text = $"Total floors in schedule: {totalInSchedule} / {requiredTotal}";
+            lblGradeTotal.ForeColor = isValid ? System.Drawing.Color.DarkGreen : System.Drawing.Color.DarkRed;
+
+            if (isValid)
+            {
+                lblGradeTotal.Text += " ✓ VALID";
+            }
+            else if (totalInSchedule > requiredTotal)
+            {
+                lblGradeTotal.Text += " ❌ TOO MANY";
+            }
+            else
+            {
+                lblGradeTotal.Text += " ❌ TOO FEW";
+            }
+
+            UpdateFloorRanges();
+        }
+
+        private void AddDefaultGradeRow()
+        {
+            dgvGradeSchedule.Rows.Clear();
+
+            // Add 4 default rows matching the example
+            AddGradeRow(0, "M50", 11);
+            AddGradeRow(1, "M45", 10);
+            AddGradeRow(2, "M40", 10);
+            AddGradeRow(3, "M30", 8);
+
+            UpdateGradeTotals();
+        }
+
+        private void AddGradeRow(int index, string wallGrade, int floors)
+        {
+            int rowIndex = dgvGradeSchedule.Rows.Add();
+            var row = dgvGradeSchedule.Rows[rowIndex];
+
+            row.Cells["Index"].Value = index;
+            row.Cells["WallGrade"].Value = wallGrade;
+            row.Cells["FloorsCount"].Value = floors.ToString();
+            row.Cells["BeamSlabGrade"].Value = CalculateBeamSlabGrade(wallGrade);
+        }
+
+        private void UpdateTotalFloorsForGradeSchedule()
+        {
+            int total = 0;
+
+            if (chkBasement.Checked)
+                total += (int)numBasementLevels.Value;
+
+            if (chkPodium.Checked)
+                total += (int)numPodiumLevels.Value;
+
+            total += 1; // E-Deck
+            total += (int)numTypicalLevels.Value;
+
+            if (chkTerrace.Checked)
+                total += 1;
+
+            numTotalFloors.Value = total;
+            UpdateGradeTotals();
+        }
+
+        // ====================================================================
+        // SLAB THICKNESS TAB
+        // ====================================================================
         private void InitializeSlabConfigTab(TabPage tab)
         {
             tab.AutoScroll = true;
@@ -222,6 +613,10 @@ namespace ETABS_CAD_Automation
             };
             grpRules.Controls.Add(lblRules);
         }
+
+        // ====================================================================
+        // BEAM DEPTH TAB
+        // ====================================================================
         private void InitializeBeamDepthTab(TabPage tab)
         {
             tab.AutoScroll = true;
@@ -505,6 +900,9 @@ namespace ETABS_CAD_Automation
             tab.Controls.Add(lblDesignNotes);
         }
 
+        // ====================================================================
+        // BUILDING CONFIGURATION TAB
+        // ====================================================================
         private void InitializeBuildingConfigTab(TabPage tab)
         {
             tab.AutoScroll = true;
@@ -732,9 +1130,7 @@ namespace ETABS_CAD_Automation
 
             yPos += 100;
 
-            //Terrace Section
-
-
+            // TERRACE SECTION
             GroupBox grpTerrace = new GroupBox
             {
                 Text = "Terrace Floor",
@@ -749,8 +1145,7 @@ namespace ETABS_CAD_Automation
                 Location = new System.Drawing.Point(20, 25),
                 Size = new System.Drawing.Size(200, 20)
             };
-
-            chkTerrace.CheckedChanged += ChekTerrace_CheckedChanged;
+            chkTerrace.CheckedChanged += ChkTerrace_CheckedChanged;
             grpTerrace.Controls.Add(chkTerrace);
 
             Label lblTerraceHeight = new Label
@@ -785,7 +1180,6 @@ namespace ETABS_CAD_Automation
             grpTerrace.Controls.Add(lblTerraceNote);
 
             yPos += 100;
-
 
             // SEISMIC ZONE
             GroupBox grpSeismic = new GroupBox
@@ -830,9 +1224,11 @@ namespace ETABS_CAD_Automation
             tab.Controls.Add(btnGenerateTabs);
         }
 
+        // ====================================================================
+        // EVENT HANDLERS
+        // ====================================================================
         private void CmbSeismicZone_SelectedIndexChanged(object sender, EventArgs e)
         {
-            // Update gravity beam width info based on seismic zone
             if (lblGravityWidthInfo != null)
             {
                 string zone = cmbSeismicZone.SelectedItem?.ToString() ?? "Zone IV";
@@ -849,10 +1245,11 @@ namespace ETABS_CAD_Automation
             numBasementHeight.Enabled = chkBasement.Checked;
         }
 
-        private void ChekTerrace_CheckedChanged(object sender, EventArgs e)
+        private void ChkTerrace_CheckedChanged(object sender, EventArgs e)
         {
             numTerraceheight.Enabled = chkTerrace.Checked;
         }
+
         private void ChkPodium_CheckedChanged(object sender, EventArgs e)
         {
             numPodiumLevels.Enabled = chkPodium.Checked;
@@ -861,10 +1258,10 @@ namespace ETABS_CAD_Automation
 
         private void BtnGenerateTabs_Click(object sender, EventArgs e)
         {
-            // Remove old CAD import tabs (keep Building Config and Beam Depths)
-            while (tabControl.TabPages.Count > 3)
+            // Remove old CAD import tabs (keep first 4 tabs: Building, Beams, Slabs, Grades)
+            while (tabControl.TabPages.Count > 4)
             {
-                tabControl.TabPages.RemoveAt(3);
+                tabControl.TabPages.RemoveAt(4);
             }
 
             // Clear dictionaries
@@ -886,19 +1283,27 @@ namespace ETABS_CAD_Automation
 
             CreateCADImportTab("EDeck", "E-Deck (Ground) Floor Plan");
             CreateCADImportTab("Typical", "Typical Floor Plan (Will be replicated)");
-            if(chkTerrace.Checked)
+
+            if (chkTerrace.Checked)
             {
                 CreateCADImportTab("Terrace", "Terrace Floor Plan");
             }
 
+            // Update total floors for grade schedule
+            UpdateTotalFloorsForGradeSchedule();
+
             MessageBox.Show(
                 "CAD Import tabs generated!\n\n" +
-                "Please upload CAD files and map layers for each floor type.",
+                "Please upload CAD files and map layers for each floor type.\n\n" +
+                "⚠️ Don't forget to configure Concrete Grades tab!",
                 "Tabs Generated",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
 
+        // ====================================================================
+        // CAD IMPORT TAB CREATION
+        // ====================================================================
         private void CreateCADImportTab(string floorType, string description)
         {
             TabPage tab = new TabPage($"{floorType} - CAD Import");
@@ -1098,6 +1503,9 @@ namespace ETABS_CAD_Automation
                 mappedLayerListBoxes[floorType].SelectedItem);
         }
 
+        // ====================================================================
+        // IMPORT BUTTON CLICK
+        // ====================================================================
         private void BtnImport_Click(object sender, EventArgs e)
         {
             // Collect beam depths
@@ -1110,9 +1518,50 @@ namespace ETABS_CAD_Automation
             BeamDepths["InternalMain"] = (int)numInternalMainDepth.Value;
 
             // Collect slab thicknesses
-            SlabThicknesses = new Dictionary<string, int>(); // FIX: Was "SlabThickness" (singular)
+            SlabThicknesses.Clear();
             SlabThicknesses["Lobby"] = (int)numLobbySlabThickness.Value;
-            SlabThicknesses["Stair"] = (int)numStairSlabThickness.Value; // FIX: Was "stair" (lowercase) and wrong variable name
+            SlabThicknesses["Stair"] = (int)numStairSlabThickness.Value;
+
+            // ⭐ Collect concrete grade schedule
+            WallGrades.Clear();
+            FloorsPerGrade.Clear();
+
+            int totalInSchedule = 0;
+            foreach (DataGridViewRow row in dgvGradeSchedule.Rows)
+            {
+                string wallGrade = row.Cells["WallGrade"].Value?.ToString();
+                string floorsStr = row.Cells["FloorsCount"].Value?.ToString();
+
+                if (string.IsNullOrEmpty(wallGrade) || !int.TryParse(floorsStr, out int floors))
+                {
+                    MessageBox.Show(
+                        $"Invalid grade schedule at row {row.Index}.\n" +
+                        "Please ensure all rows have valid grades and floor counts.",
+                        "Validation Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return;
+                }
+
+                WallGrades.Add(wallGrade);
+                FloorsPerGrade.Add(floors);
+                totalInSchedule += floors;
+            }
+
+            // Validate grade schedule totals
+            int requiredFloors = (int)numTotalFloors.Value;
+            if (totalInSchedule != requiredFloors)
+            {
+                MessageBox.Show(
+                    $"Grade schedule floor count mismatch!\n\n" +
+                    $"Building has {requiredFloors} floors\n" +
+                    $"Grade schedule covers {totalInSchedule} floors\n\n" +
+                    $"Please adjust the grade schedule to match total floors.",
+                    "Grade Schedule Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                return;
+            }
 
             // Validate and collect all configurations
             FloorConfigs.Clear();
@@ -1191,8 +1640,8 @@ namespace ETABS_CAD_Automation
                 LayerMapping = GetLayerMapping("Typical")
             });
 
-
-            if(chkTerrace.Checked)
+            // Terrace
+            if (chkTerrace.Checked)
             {
                 if (!ValidateFloorConfig("Terrace"))
                 {
@@ -1200,6 +1649,7 @@ namespace ETABS_CAD_Automation
                         "Validation Error");
                     return;
                 }
+
                 FloorConfigs.Add(new FloorTypeConfig
                 {
                     Name = "Terrace",
@@ -1209,6 +1659,7 @@ namespace ETABS_CAD_Automation
                     LayerMapping = GetLayerMapping("Terrace")
                 });
             }
+
             SeismicZone = cmbSeismicZone.SelectedItem?.ToString() ?? "Zone IV";
 
             // Show confirmation
@@ -1242,6 +1693,9 @@ namespace ETABS_CAD_Automation
             return mapping;
         }
 
+        // ====================================================================
+        // CONFIRMATION DIALOG
+        // ====================================================================
         private void ShowConfirmation()
         {
             int totalStories = 0;
@@ -1288,6 +1742,22 @@ namespace ETABS_CAD_Automation
             breakdown += $"    • Peripheral Dead: {BeamDepths["PeripheralDeadMain"]}mm depth\n";
             breakdown += $"    • Peripheral Portal: {BeamDepths["PeripheralPortalMain"]}mm depth\n";
             breakdown += $"    • Internal Main: {BeamDepths["InternalMain"]}mm depth\n\n";
+
+            // ⭐ ADD CONCRETE GRADE SCHEDULE
+            breakdown += "🏗️ CONCRETE GRADE SCHEDULE:\n";
+            int floorStart = 1;
+            for (int i = 0; i < WallGrades.Count; i++)
+            {
+                string beamSlabGrade = CalculateBeamSlabGrade(WallGrades[i]);
+                int floorEnd = floorStart + FloorsPerGrade[i] - 1;
+
+                breakdown += $"  Floors {floorStart}-{floorEnd} ({FloorsPerGrade[i]} floors):\n";
+                breakdown += $"    • Wall: {WallGrades[i]}\n";
+                breakdown += $"    • Beam/Slab: {beamSlabGrade}\n";
+
+                floorStart = floorEnd + 1;
+            }
+            breakdown += "\n";
 
             breakdown += "═══════════════════════════════════════\n";
             breakdown += "Proceed with import?";

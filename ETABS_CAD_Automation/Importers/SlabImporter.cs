@@ -1,6 +1,6 @@
 ﻿
 // ============================================================================
-// FILE: Importers/SlabImporter.cs (CORRECTED - NO Z CONVERSION)
+// FILE: Importers/SlabImporterEnhanced.cs (WITH GRADE SCHEDULE SUPPORT)
 // ============================================================================
 using ETABSv1;
 using netDxf;
@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using ETABS_CAD_Automation.Core;
 using static netDxf.Entities.HatchBoundaryPath;
 
 namespace ETABS_CAD_Automation.Importers
@@ -18,16 +19,15 @@ namespace ETABS_CAD_Automation.Importers
         private cSapModel sapModel;
         private DxfDocument dxfDoc;
         private Dictionary<string, int> slabConfig;
+        private GradeScheduleManager gradeSchedule;  // NEW: Grade schedule
 
         // Convert DXF coordinates to meters
         // Z elevations come from StoryManager and are ALREADY in meters - NO CONVERSION NEEDED
         private const double MM_TO_M = 0.001;
         private const double CLOSURE_TOLERANCE = 10000.0; // 10000mm (10m) tolerance - auto-close large gaps
-        // REMOVED Z_TO_M - not needed since elevations are already in meters
         private const double MIN_AREA = 0.0001; // 0.01 m² minimum area
 
         private double M(double mm) => mm * MM_TO_M;
-        // REMOVED MZ() - elevations passed directly without conversion
 
         // Store available slab sections from template
         private static Dictionary<string, SlabSectionInfo> availableSlabSections =
@@ -61,7 +61,11 @@ namespace ETABS_CAD_Automation.Importers
             { 200, 5.0 }    // 200mm for span <= 5.0m
         };
 
-        public SlabImporterEnhanced(cSapModel model, DxfDocument doc, Dictionary<string, int> config = null)
+        public SlabImporterEnhanced(
+            cSapModel model,
+            DxfDocument doc,
+            Dictionary<string, int> config = null,
+            GradeScheduleManager gradeManager = null)  // NEW: Optional grade manager
         {
             sapModel = model;
             dxfDoc = doc;
@@ -70,6 +74,7 @@ namespace ETABS_CAD_Automation.Importers
                 { "Lobby", 160 },
                 { "Stair", 175 }
             };
+            gradeSchedule = gradeManager;  // NEW
 
             LoadAvailableSlabSections();
         }
@@ -179,22 +184,51 @@ namespace ETABS_CAD_Automation.Importers
             string bestMatch = null;
             int minDifference = int.MaxValue;
 
+            // ⭐ CRITICAL FIX: Remove "M" prefix from preferredGrade for comparison
+            // GradeScheduleManager returns "M30", but section.Grade is stored as "30"
+            string gradeToMatch = preferredGrade?.Replace("M", "").Replace("m", "").Trim();
+
             // First try to find exact match with preferred grade
-            if (!string.IsNullOrEmpty(preferredGrade))
+            if (!string.IsNullOrEmpty(gradeToMatch))
             {
                 foreach (var kvp in availableSlabSections)
                 {
                     var section = kvp.Value;
-                    if (section.ThicknessMm == requiredThickness && section.Grade == preferredGrade)
+                    if (section.ThicknessMm == requiredThickness && section.Grade == gradeToMatch)
                     {
                         System.Diagnostics.Debug.WriteLine(
                             $"  Exact match: {kvp.Key} ({section.ThicknessMm}mm M{section.Grade})");
                         return kvp.Key;
                     }
                 }
+
+                // Try to find closest thickness with preferred grade
+                foreach (var kvp in availableSlabSections)
+                {
+                    var section = kvp.Value;
+                    if (section.Grade == gradeToMatch)
+                    {
+                        int difference = Math.Abs(section.ThicknessMm - requiredThickness);
+
+                        if (difference < minDifference)
+                        {
+                            minDifference = difference;
+                            bestMatch = kvp.Key;
+                        }
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    var matched = availableSlabSections[bestMatch];
+                    System.Diagnostics.Debug.WriteLine(
+                        $"  Required: {requiredThickness}mm M{gradeToMatch} → Using: {bestMatch} ({matched.ThicknessMm}mm M{matched.Grade})");
+                    return bestMatch;
+                }
             }
 
-            // Find closest thickness
+            // Fallback: Find closest thickness without grade preference
+            minDifference = int.MaxValue;
             foreach (var kvp in availableSlabSections)
             {
                 var section = kvp.Value;
@@ -211,7 +245,7 @@ namespace ETABS_CAD_Automation.Importers
             {
                 var matched = availableSlabSections[bestMatch];
                 System.Diagnostics.Debug.WriteLine(
-                    $"  Required: {requiredThickness}mm → Using: {bestMatch} ({matched.ThicknessMm}mm)");
+                    $"  Required: {requiredThickness}mm → Using: {bestMatch} ({matched.ThicknessMm}mm M{matched.Grade})");
                 return bestMatch;
             }
 
@@ -265,7 +299,7 @@ namespace ETABS_CAD_Automation.Importers
             return maxSpan;
         }
 
-        private string DetermineSlabSection(string layerName, List<netDxf.Vector2> points)
+        private string DetermineSlabSection(string layerName, List<netDxf.Vector2> points, string preferredGrade)
         {
             string upper = layerName.ToUpperInvariant();
             int thickness;
@@ -275,7 +309,7 @@ namespace ETABS_CAD_Automation.Importers
             {
                 thickness = slabConfig["Lobby"];
                 System.Diagnostics.Debug.WriteLine($"  Lobby slab: {thickness}mm");
-                return GetClosestSlabSection(thickness);
+                return GetClosestSlabSection(thickness, preferredGrade);
             }
 
             // Stair slabs - use configured thickness
@@ -283,7 +317,7 @@ namespace ETABS_CAD_Automation.Importers
             {
                 thickness = slabConfig["Stair"];
                 System.Diagnostics.Debug.WriteLine($"  Stair slab: {thickness}mm");
-                return GetClosestSlabSection(thickness);
+                return GetClosestSlabSection(thickness, preferredGrade);
             }
 
             // Cantilever slabs - based on span
@@ -294,7 +328,7 @@ namespace ETABS_CAD_Automation.Importers
                 double spanM = CalculateMaxSpan(points);
                 thickness = DetermineCantileverThickness(spanM);
                 System.Diagnostics.Debug.WriteLine($"  Cantilever slab: span={spanM:F2}m → {thickness}mm");
-                return GetClosestSlabSection(thickness);
+                return GetClosestSlabSection(thickness, preferredGrade);
             }
 
             // Regular slabs - based on area
@@ -314,7 +348,7 @@ namespace ETABS_CAD_Automation.Importers
                 slabType = "Service";
 
             System.Diagnostics.Debug.WriteLine($"  {slabType} slab: area={areaM2:F2}m² → {thickness}mm");
-            return GetClosestSlabSection(thickness);
+            return GetClosestSlabSection(thickness, preferredGrade);
         }
 
         public void ImportSlabs(Dictionary<string, string> layerMapping, double elevation, int story)
@@ -327,8 +361,16 @@ namespace ETABS_CAD_Automation.Importers
                 return;
             }
 
+            // NEW: Get slab grade for this story (0.7x wall grade)
+            string slabGrade = gradeSchedule?.GetBeamSlabGradeForStory(story);
+
             System.Diagnostics.Debug.WriteLine($"\n========== IMPORTING SLABS - Story {story} ==========");
             System.Diagnostics.Debug.WriteLine($"Slab Elevation: {elevation:F3}m (already in meters - no conversion)");
+
+            if (!string.IsNullOrEmpty(slabGrade))
+            {
+                System.Diagnostics.Debug.WriteLine($"Slab Concrete Grade: {slabGrade}");
+            }
 
             int successCount = 0;
             int failCount = 0;
@@ -346,7 +388,7 @@ namespace ETABS_CAD_Automation.Importers
 
                 foreach (var poly in polylines)
                 {
-                    var result = CreateSlabFromPolyline(poly, elevation, layerName, story);
+                    var result = CreateSlabFromPolyline(poly, elevation, layerName, story, slabGrade);
                     if (result == SlabCreationResult.Success) successCount++;
                     else if (result == SlabCreationResult.Failed) failCount++;
                     else skippedCount++;
@@ -360,7 +402,7 @@ namespace ETABS_CAD_Automation.Importers
 
                 foreach (var hatch in hatches)
                 {
-                    var result = CreateSlabFromHatch(hatch, elevation, layerName, story);
+                    var result = CreateSlabFromHatch(hatch, elevation, layerName, story, slabGrade);
                     if (result == SlabCreationResult.Success) successCount++;
                     else if (result == SlabCreationResult.Failed) failCount++;
                     else skippedCount++;
@@ -381,7 +423,12 @@ namespace ETABS_CAD_Automation.Importers
             Skipped
         }
 
-        private SlabCreationResult CreateSlabFromPolyline(Polyline2D poly, double elevation, string layerName, int story)
+        private SlabCreationResult CreateSlabFromPolyline(
+            Polyline2D poly,
+            double elevation,
+            string layerName,
+            int story,
+            string preferredGrade)
         {
             try
             {
@@ -407,7 +454,7 @@ namespace ETABS_CAD_Automation.Importers
                 }
 
                 // Determine section based on layer name and geometry
-                string section = DetermineSlabSection(layerName, points);
+                string section = DetermineSlabSection(layerName, points, preferredGrade);
 
                 return CreateSlabFromPoints(points, elevation, section, story);
             }
@@ -418,7 +465,12 @@ namespace ETABS_CAD_Automation.Importers
             }
         }
 
-        private SlabCreationResult CreateSlabFromHatch(Hatch hatch, double elevation, string layerName, int story)
+        private SlabCreationResult CreateSlabFromHatch(
+            Hatch hatch,
+            double elevation,
+            string layerName,
+            int story,
+            string preferredGrade)
         {
             try
             {
@@ -442,7 +494,7 @@ namespace ETABS_CAD_Automation.Importers
                         }
 
                         // Determine section based on layer name and geometry
-                        string section = DetermineSlabSection(layerName, vertices);
+                        string section = DetermineSlabSection(layerName, vertices, preferredGrade);
 
                         var result = CreateSlabFromPoints(vertices, elevation, section, story);
                         if (result == SlabCreationResult.Success)

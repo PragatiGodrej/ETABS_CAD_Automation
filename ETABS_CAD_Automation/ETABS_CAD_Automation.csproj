@@ -53,6 +53,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Core\ETABSController.cs" />
+    <Compile Include="Core\GradeScheduleManager.cs" />
     <Compile Include="Core\MaterialManager.cs" />
     <Compile Include="Core\StoryManager.cs" />
     <Compile Include="Core\WallThicknessCalculator.cs" />
